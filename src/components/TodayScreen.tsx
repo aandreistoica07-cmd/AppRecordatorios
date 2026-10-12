@@ -17,6 +17,7 @@ import {
 } from '../core/scheduler';
 import type {
   ActiveNoticeMode,
+  AlarmKitStatus,
   BlockingRule,
   GlobalSettings,
   RoutineConfig,
@@ -33,6 +34,7 @@ interface TodayScreenProps {
   blockingRules: BlockingRule[];
   settings: GlobalSettings;
   effectiveMode: ActiveNoticeMode;
+  alarmKitStatus: AlarmKitStatus;
   streakDays: number;
   onMarkDone: (routine: RoutineConfig, dateKey: string) => void;
   onUndoDone: (routine: RoutineConfig, dateKey: string) => void;
@@ -41,6 +43,14 @@ interface TodayScreenProps {
     dateKey: string,
     stepId: string
   ) => void;
+  onPostponeTask: (
+    routine: RoutineConfig,
+    dateKey: string,
+    mode:
+      | { type: 'add_hours'; hours: number }
+      | { type: 'until_time'; targetHHMM: string }
+  ) => void;
+  onResetTaskPostpone: (routine: RoutineConfig, dateKey: string) => void;
   onPostponeNotAtHome: (routine: RoutineConfig, dateKey: string) => void;
   onActivateDiscreet: (untilDate: Date) => void;
   onActivatePause: (untilDate: Date, targetHHMM: string) => void;
@@ -59,10 +69,13 @@ export const TodayScreen: React.FC<TodayScreenProps> = ({
   blockingRules,
   settings,
   effectiveMode,
+  alarmKitStatus,
   streakDays,
   onMarkDone,
   onUndoDone,
   onToggleChecklistStep,
+  onPostponeTask,
+  onResetTaskPostpone,
   onPostponeNotAtHome,
   onActivateDiscreet,
   onActivatePause,
@@ -79,6 +92,14 @@ export const TodayScreen: React.FC<TodayScreenProps> = ({
   const [confirmUndoTarget, setConfirmUndoTarget] = useState<{
     routine: RoutineConfig;
     dateKey: string;
+  } | null>(null);
+  const [openPostponeRoutineId, setOpenPostponeRoutineId] = useState<
+    string | null
+  >(null);
+  const [postponeTimeSheetTarget, setPostponeTimeSheetTarget] = useState<{
+    routine: RoutineConfig;
+    dateKey: string;
+    initialHHMM: string;
   } | null>(null);
 
   const [timeSheetConfig, setTimeSheetConfig] = useState<{
@@ -209,7 +230,8 @@ export const TodayScreen: React.FC<TodayScreenProps> = ({
       setTimeSheetConfig({
         open: true,
         mode: 'paused',
-        initialHHMM: '18:00',
+        initialHHMM:
+          effectiveMode.type === 'paused' ? effectiveMode.targetHHMM : '18:00',
       });
       return;
     }
@@ -234,7 +256,7 @@ export const TodayScreen: React.FC<TodayScreenProps> = ({
   const handleConfirmTimeSheet = (hhmm: string) => {
     let target = buildDateFromKeyAndHHMM(todayKey, hhmm);
     if (target.getTime() <= now.getTime()) {
-      target = new Date(target.getTime() + 24 * 3600_000);
+      target = buildDateFromKeyAndHHMM(addDaysToDateKey(todayKey, 1), hhmm);
     }
     if (timeSheetConfig.mode === 'discreet') {
       onActivateDiscreet(target);
@@ -363,7 +385,9 @@ export const TodayScreen: React.FC<TodayScreenProps> = ({
                   ? 'Vibración y notificaciones locales sin AlarmKit'
                   : effectiveMode.type === 'paused'
                   ? `Silencio total hasta las ${effectiveMode.targetHHMM}`
-                  : 'AlarmKit activo (suena incluso en modo silencio)'}
+                  : alarmKitStatus.available && alarmKitStatus.authorized
+                  ? 'AlarmKit activo (suena incluso en modo silencio)'
+                  : 'Notificaciones (con el móvil en silencio solo vibran)'}
               </div>
             </div>
           </div>
@@ -378,7 +402,7 @@ export const TodayScreen: React.FC<TodayScreenProps> = ({
             onChange={handleModeSegmentChange}
           />
 
-          {activeModeTab === 'discreet' && effectiveMode.type !== 'discreet' && (
+          {activeModeTab === 'discreet' && (
             <SegmentedControl<DiscreetPreset>
               options={[
                 { value: '1h', label: '1 h' },
@@ -389,6 +413,24 @@ export const TodayScreen: React.FC<TodayScreenProps> = ({
               value="1h"
               onChange={handleDiscreetPresetSelect}
             />
+          )}
+
+          {activeModeTab === 'paused' && effectiveMode.type === 'paused' && (
+            <button
+              type="button"
+              className="bevel-row-action-pill"
+              style={{ width: '100%' }}
+              onClick={() =>
+                setTimeSheetConfig({
+                  open: true,
+                  mode: 'paused',
+                  initialHHMM: effectiveMode.targetHHMM,
+                })
+              }
+            >
+              <Icon name="Clock" size={18} weight="bold" />
+              <span>Cambiar hora fin de pausa ({effectiveMode.targetHHMM})</span>
+            </button>
           )}
         </section>
       )}
@@ -760,11 +802,18 @@ export const TodayScreen: React.FC<TodayScreenProps> = ({
               (r) =>
                 r.routineId === routine.id && r.dateKey === selectedDateKey
             );
-            const primaryHHMM = resolveRoutinePrimaryHHMM(routine, settings);
+            const basePrimaryHHMM = resolveRoutinePrimaryHHMM(routine, settings);
             const primaryDate = resolveRoutinePrimaryDate(
               routine,
               selectedDateKey,
-              settings
+              settings,
+              rec
+            );
+            const primaryHHMM =
+              rec?.postponedPrimaryTimeHHMM ?? basePrimaryHHMM;
+            const isPostponedPrimary = Boolean(
+              rec?.postponedPrimaryTimeHHMM &&
+                rec.postponedPrimaryTimeHHMM !== basePrimaryHHMM
             );
             const blockCheck = findActiveBlockForTimestamp(
               routine.id,
@@ -799,6 +848,10 @@ export const TodayScreen: React.FC<TodayScreenProps> = ({
             const afternoonHHMM =
               rec?.postponedAfternoonTimeHHMM ??
               routine.secondarySchedule?.timeHHMM;
+            const isPostponeDrawerOpen =
+              openPostponeRoutineId === routine.id &&
+              !isCompleted &&
+              !isOmitted;
 
             return (
               <article
@@ -860,6 +913,7 @@ export const TodayScreen: React.FC<TodayScreenProps> = ({
                         >
                           {primaryHHMM}
                         </strong>
+                        {isPostponedPrimary ? ` (de ${basePrimaryHHMM})` : ''}
                         {' · '}
                         {isCompleted && 'Completada · Toca para deshacer'}
                         {isOmitted &&
@@ -868,7 +922,11 @@ export const TodayScreen: React.FC<TodayScreenProps> = ({
                             'Omitido por dermastamp')}
                         {!isCompleted && !isOmitted && (
                           <>
-                            {isDue ? 'Vencida' : 'Programada'}
+                            {isPostponedPrimary
+                              ? 'Pospuesta'
+                              : isDue
+                              ? 'Vencida'
+                              : 'Programada'}
                             {routine.secondarySchedule
                               ? ` · Tarde ${afternoonHHMM}`
                               : ''}
@@ -880,20 +938,41 @@ export const TodayScreen: React.FC<TodayScreenProps> = ({
 
                   {/* Botón "Hecho" con Check weight="bold" o botón de deshacer si está completada */}
                   {!isCompleted && !isOmitted ? (
-                    <button
-                      type="button"
-                      className="bevel-row-action-pill done-active"
-                      disabled={!canCompleteChecklist}
-                      onClick={() => onMarkDone(routine, selectedDateKey)}
-                    >
-                      <Icon
-                        name="Check"
-                        size={18}
-                        weight="bold"
-                        color="#27d3af"
-                      />
-                      <span>Hecho</span>
-                    </button>
+                    <div style={{ display: 'flex', gap: '8px', flexShrink: 0 }}>
+                      <button
+                        type="button"
+                        className="bevel-row-action-pill"
+                        title={`Posponer ${routine.name}`}
+                        onClick={() =>
+                          setOpenPostponeRoutineId((prev) =>
+                            prev === routine.id ? null : routine.id
+                          )
+                        }
+                      >
+                        <Icon
+                          name="Clock"
+                          size={18}
+                          weight="bold"
+                          color="var(--text-secondary)"
+                        />
+                        <span>Posponer</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        className="bevel-row-action-pill done-active"
+                        disabled={!canCompleteChecklist}
+                        onClick={() => onMarkDone(routine, selectedDateKey)}
+                      >
+                        <Icon
+                          name="Check"
+                          size={18}
+                          weight="bold"
+                          color="#27d3af"
+                        />
+                        <span>Hecho</span>
+                      </button>
+                    </div>
                   ) : isCompleted ? (
                     <button
                       type="button"
@@ -926,6 +1005,91 @@ export const TodayScreen: React.FC<TodayScreenProps> = ({
                     </div>
                   )}
                 </div>
+
+                {/* Selector de posposición por tarea (1 h, 2 h, 4 h, Hora…) */}
+                {isPostponeDrawerOpen && (
+                  <div
+                    style={{
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: '8px',
+                      paddingTop: '8px',
+                      borderTop: '1px solid var(--border-subtle)',
+                    }}
+                  >
+                    <div
+                      style={{
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        alignItems: 'center',
+                      }}
+                    >
+                      <span
+                        className="routine-subtext"
+                        style={{ fontSize: '13px' }}
+                      >
+                        Posponer aviso principal (tope {settings.sleepTimeHHMM})
+                      </span>
+                      {isPostponedPrimary && (
+                        <button
+                          type="button"
+                          className="bevel-row-action-pill"
+                          style={{
+                            minHeight: '30px',
+                            padding: '4px 10px',
+                            fontSize: '12px',
+                          }}
+                          onClick={() => {
+                            onResetTaskPostpone(routine, selectedDateKey);
+                            setOpenPostponeRoutineId(null);
+                          }}
+                        >
+                          <span>Restablecer ({basePrimaryHHMM})</span>
+                        </button>
+                      )}
+                    </div>
+                    <div
+                      style={{
+                        display: 'grid',
+                        gridTemplateColumns: 'repeat(4, 1fr)',
+                        gap: '8px',
+                      }}
+                    >
+                      {([1, 2, 4] as const).map((hrs) => (
+                        <button
+                          key={hrs}
+                          type="button"
+                          className="bevel-row-action-pill"
+                          style={{ padding: '8px 6px', fontSize: '14px' }}
+                          onClick={() => {
+                            onPostponeTask(routine, selectedDateKey, {
+                              type: 'add_hours',
+                              hours: hrs,
+                            });
+                            setOpenPostponeRoutineId(null);
+                          }}
+                        >
+                          <span>+{hrs} h</span>
+                        </button>
+                      ))}
+                      <button
+                        type="button"
+                        className="bevel-row-action-pill"
+                        style={{ padding: '8px 6px', fontSize: '14px' }}
+                        onClick={() => {
+                          setPostponeTimeSheetTarget({
+                            routine,
+                            dateKey: selectedDateKey,
+                            initialHHMM: primaryHHMM,
+                          });
+                          setOpenPostponeRoutineId(null);
+                        }}
+                      >
+                        <span>Hora…</span>
+                      </button>
+                    </div>
+                  </div>
+                )}
 
                 {/* Checklist de 2 pasos del Dermastamp */}
                 {hasChecklist && !isCompleted && !isOmitted && (
@@ -1088,7 +1252,7 @@ export const TodayScreen: React.FC<TodayScreenProps> = ({
         subtitle={
           timeSheetConfig.mode === 'discreet'
             ? 'Las alarmas se sustituirán por notificaciones discretas hasta esta hora.'
-            : 'Silencio total. Al terminar sonará una única alarma si queda algo pendiente.'
+            : 'Silencio total. Al terminar sonará un único aviso resumen si queda algo pendiente.'
         }
         initialHHMM={timeSheetConfig.initialHHMM}
         confirmLabel={
@@ -1101,6 +1265,29 @@ export const TodayScreen: React.FC<TodayScreenProps> = ({
           setTimeSheetConfig((prev) => ({ ...prev, open: false }));
           setPendingModeTab(null);
         }}
+      />
+
+      <TimePickerSheet
+        open={Boolean(postponeTimeSheetTarget)}
+        title={
+          postponeTimeSheetTarget
+            ? `Posponer ${postponeTimeSheetTarget.routine.name}`
+            : 'Posponer hasta una hora'
+        }
+        subtitle={`Se cancelarán las insistencias previas y el aviso sonará a la hora elegida (tope hora de dormir: ${settings.sleepTimeHHMM}).`}
+        initialHHMM={postponeTimeSheetTarget?.initialHHMM ?? '21:00'}
+        confirmLabel="Posponer tarea"
+        onConfirm={(hhmm) => {
+          if (postponeTimeSheetTarget) {
+            onPostponeTask(
+              postponeTimeSheetTarget.routine,
+              postponeTimeSheetTarget.dateKey,
+              { type: 'until_time', targetHHMM: hhmm }
+            );
+          }
+          setPostponeTimeSheetTarget(null);
+        }}
+        onClose={() => setPostponeTimeSheetTarget(null)}
       />
     </div>
   );

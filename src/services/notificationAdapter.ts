@@ -3,6 +3,7 @@
 import { Capacitor } from '@capacitor/core';
 import { LocalNotifications } from '@capacitor/local-notifications';
 import type {
+  AlarmKitStatus,
   GlobalSettings,
   PermissionGrantLabel,
   ScheduledPrompt,
@@ -13,6 +14,7 @@ import { getPreviouslyScheduledIds, saveScheduledIds } from './storage';
 export const ACTION_TYPE_ROUTINE_DEFAULT = 'ROUTINE_DEFAULT_ACTIONS';
 export const ACTION_TYPE_ROUTINE_NOT_AT_HOME = 'ROUTINE_NOT_AT_HOME_ACTIONS';
 export const DEFAULT_NOTIFICATION_SOUND = 'default.wav';
+export const SIDELOAD_EXPIRY_NOTIFICATION_ID = 999007;
 
 type ForegroundNotificationCallback = (payload: {
   id: number;
@@ -20,23 +22,90 @@ type ForegroundNotificationCallback = (payload: {
   body: string;
 }) => void;
 
-type NotificationActionCallback = (payload: {
+export interface NotificationActionPayload {
   actionId: string;
   routineId?: string;
   dateKey?: string;
-}) => void;
+  kind?: string;
+  notificationId?: number;
+}
+
+type NotificationActionCallback = (payload: NotificationActionPayload) => void;
 
 let foregroundNotifCallback: ForegroundNotificationCallback | null = null;
 
 function mapPermissionStateToLabel(state: unknown): PermissionGrantLabel {
   const normalized = String(state ?? '').toLowerCase();
-  if (normalized === 'granted' || normalized === 'authorized' || normalized === 'provisional' || normalized === 'ephemeral') {
+  if (
+    normalized === 'granted' ||
+    normalized === 'authorized' ||
+    normalized === 'provisional' ||
+    normalized === 'ephemeral'
+  ) {
     return 'Concedido';
   }
   if (normalized === 'denied') {
     return 'Denegado';
   }
   return 'Pendiente';
+}
+
+/**
+ * Detecta si el plugin nativo `AlarmKit` (Fase 3) está registrado en Capacitor y autorizado por el usuario.
+ * Mientras no exista o no esté autorizado, devuelve `{ available: false, authorized: false }`.
+ */
+export async function getAlarmKitStatus(): Promise<AlarmKitStatus> {
+  try {
+    if (
+      !Capacitor.isNativePlatform() ||
+      !Capacitor.isPluginAvailable('AlarmKit')
+    ) {
+      return { available: false, authorized: false };
+    }
+
+    const plugins = (
+      Capacitor as unknown as {
+        Plugins?: Record<
+          string,
+          {
+            checkPermissions?: () => Promise<Record<string, unknown>>;
+            isAuthorized?: () => Promise<Record<string, unknown>>;
+          }
+        >;
+      }
+    ).Plugins;
+
+    const alarmKitPlugin = plugins?.AlarmKit;
+    if (!alarmKitPlugin) {
+      return { available: true, authorized: false };
+    }
+
+    if (typeof alarmKitPlugin.checkPermissions === 'function') {
+      const res = await alarmKitPlugin.checkPermissions();
+      const rawStatus = String(
+        res?.alarm ?? res?.display ?? res?.status ?? ''
+      ).toLowerCase();
+      return {
+        available: true,
+        authorized:
+          rawStatus === 'granted' ||
+          rawStatus === 'authorized' ||
+          res?.authorized === true,
+      };
+    }
+
+    if (typeof alarmKitPlugin.isAuthorized === 'function') {
+      const res = await alarmKitPlugin.isAuthorized();
+      return {
+        available: true,
+        authorized: Boolean(res?.authorized ?? res?.value),
+      };
+    }
+
+    return { available: true, authorized: false };
+  } catch {
+    return { available: false, authorized: false };
+  }
 }
 
 /**
@@ -181,6 +250,17 @@ export async function requestNotificationPermissions(): Promise<{
   }
 }
 
+/**
+ * Registra los tipos de acción en `@capacitor/local-notifications`:
+ * - Botones: "Hecho" (`DONE`), "Posponer 1 h" (`POSTPONE_1H`) y "Pausar avisos 2 h" (`PAUSE_2H`),
+ *   más "No estoy en casa (+1h)" (`NOT_AT_HOME`) en el aviso secundario de la pastilla.
+ * - IMPORTANTE (`foreground: true`): En iOS (`UNNotificationActionOptions.foreground`), una app Capacitor
+ *   ejecuta la lógica de negocio en el hilo JS de `WKWebView`. Con la app cerrada o suspendida y `foreground: false`,
+ *   el delegado nativo de Capacitor (`LocalNotificationsHandler.swift`) llama a `notifyListeners(..., retainUntilConsumed: true)`
+ *   y cierra inmediatamente el `completionHandler()` de iOS antes de que el WebView pueda hidratar React, leer `Preferences`
+ *   y reprogramar la cola en `UNUserNotificationCenter`. Con `foreground: true`, al pulsar cualquiera de los botones
+ *   se abre la app y se aplica la acción de forma inmediata y garantizada sobre la tarea de la notificación.
+ */
 export async function registerNotificationCategories(): Promise<void> {
   if (!Capacitor.isNativePlatform()) return;
   try {
@@ -192,7 +272,17 @@ export async function registerNotificationCategories(): Promise<void> {
             {
               id: 'DONE',
               title: 'Hecho',
-              foreground: false,
+              foreground: true,
+            },
+            {
+              id: 'POSTPONE_1H',
+              title: 'Posponer 1 h',
+              foreground: true,
+            },
+            {
+              id: 'PAUSE_2H',
+              title: 'Pausar avisos 2 h',
+              foreground: true,
             },
           ],
         },
@@ -202,12 +292,22 @@ export async function registerNotificationCategories(): Promise<void> {
             {
               id: 'DONE',
               title: 'Hecho',
-              foreground: false,
+              foreground: true,
+            },
+            {
+              id: 'POSTPONE_1H',
+              title: 'Posponer 1 h',
+              foreground: true,
+            },
+            {
+              id: 'PAUSE_2H',
+              title: 'Pausar avisos 2 h',
+              foreground: true,
             },
             {
               id: 'NOT_AT_HOME',
               title: 'No estoy en casa (+1h)',
-              foreground: false,
+              foreground: true,
             },
           ],
         },
@@ -260,6 +360,11 @@ export async function setupNotificationListeners(handlers: {
             typeof extra.routineId === 'string' ? extra.routineId : undefined,
           dateKey:
             typeof extra.dateKey === 'string' ? extra.dateKey : undefined,
+          kind: typeof extra.kind === 'string' ? extra.kind : undefined,
+          notificationId:
+            typeof event.notification?.id === 'number'
+              ? event.notification.id
+              : undefined,
         });
       }
     );
@@ -280,6 +385,11 @@ export async function setupNotificationListeners(handlers: {
  * Construye el payload de una notificación local asegurando SIEMPRE:
  * - `sound: DEFAULT_NOTIFICATION_SOUND` explícito (sin él, iOS `UNMutableNotificationContent.sound` queda en nil y no suena).
  * - `silent: false` explícito (para que `willPresent` en iOS devuelva `[.badge, .sound, .alert]` también en primer plano).
+ * - Agrupación por rutina:
+ *   - En iOS, `@capacitor/local-notifications` mapea `threadIdentifier` a `UNMutableNotificationContent.threadIdentifier`
+ *     y `summaryArgument` a `UNMutableNotificationContent.summaryArgument` (`LocalNotificationsPlugin.swift` líneas 254-260).
+ *   - En Android, mapea `group` a `NotificationCompat.Builder.setGroup()`.
+ *   Se incluyen ambos (`threadIdentifier` y `group`) para agrupar todas las notificaciones de una misma rutina.
  */
 export function buildLocalNotificationPayload(
   p: ScheduledPrompt,
@@ -288,16 +398,32 @@ export function buildLocalNotificationPayload(
   const hasNotAtHome = p.actions.includes('NOT_AT_HOME');
   const isInsistence =
     p.kind === 'insistence' || p.kind === 'secondary_insistence';
+  const isPauseRecovery = p.kind === 'pause_recovery';
+  const groupKey = isPauseRecovery
+    ? 'routine-pause-recovery'
+    : `routine-${p.routineId}`;
+
+  const title = isPauseRecovery
+    ? `🔔 Fin de pausa · ${p.routineName}`
+    : isInsistence
+    ? `⏰ Insistencia: ${p.routineName}`
+    : `🔔 ${p.routineName}`;
+
+  const body = isPauseRecovery
+    ? 'La pausa de avisos ha terminado. Revisa tus tareas pendientes de hoy.'
+    : hasNotAtHome
+    ? 'Marca "Hecho", "Posponer 1 h", "Pausar 2 h" o "No estoy en casa" (máx. 22:00).'
+    : 'Pendiente de marcar como "Hecho". Puedes posponer 1 h o pausar 2 h.';
+
   return {
     id: p.notificationNumericId,
-    title: isInsistence
-      ? `⏰ Insistencia: ${p.routineName}`
-      : `🔔 ${p.routineName}`,
-    body: hasNotAtHome
-      ? 'Marca "Hecho" o "No estoy en casa" para posponer 1 hora (máx. 22:00).'
-      : 'Pendiente de marcar como "Hecho". Seguirá avisando cada 10 min.',
+    title,
+    body,
     sound: DEFAULT_NOTIFICATION_SOUND,
     silent: false,
+    threadIdentifier: groupKey,
+    summaryArgument: p.routineName,
+    group: groupKey,
     schedule: {
       at: new Date(p.scheduledAtISO),
       allowWhileIdle: true,
@@ -310,6 +436,7 @@ export function buildLocalNotificationPayload(
       routineId: p.routineId,
       dateKey: p.dateKey,
       kind: p.kind,
+      threadIdentifier: groupKey,
       interruptionLevel: settings.useTimeSensitiveEntitlement
         ? 'timeSensitive'
         : 'active',
@@ -317,51 +444,173 @@ export function buildLocalNotificationPayload(
   };
 }
 
+function doesExtraMatchRoutine(
+  extra: Record<string, unknown>,
+  routineId: string
+): boolean {
+  if (extra.routineId === routineId) return true;
+  if (
+    typeof extra.routineId === 'string' &&
+    extra.routineId
+      .split(',')
+      .map((s) => s.trim())
+      .includes(routineId)
+  ) {
+    return true;
+  }
+  return false;
+}
+
 /**
- * Cancela explícitamente por ID todas las alarmas/notificaciones de una rutina eliminada.
+ * Elimina las notificaciones YA ENTREGADAS en el Centro de Notificaciones de iOS
+ * y cancela las PENDIENTES para una rutina concreta (al marcar Hecho, posponer o eliminar),
+ * o para todas las rutinas activas cuando se inicia una pausa (`routineId === undefined`).
+ */
+export async function clearRoutineDeliveredAndPendingNotifications(
+  routineId?: string,
+  knownNumericIds: number[] = []
+): Promise<{ removedDeliveredIds: number[]; cancelledPendingIds: number[] }> {
+  const removedDeliveredIds = new Set<number>();
+  const cancelledPendingIds = new Set<number>(knownNumericIds);
+
+  if (Capacitor.isNativePlatform()) {
+    try {
+      const delivered = await LocalNotifications.getDeliveredNotifications();
+      for (const d of delivered.notifications) {
+        const extra = (d.extra ?? {}) as Record<string, unknown>;
+        if (!routineId) {
+          // Si es pausa global, limpiamos todas las notificaciones de rutinas entregadas (excepto aviso de Sideloadly)
+          if (d.id !== SIDELOAD_EXPIRY_NOTIFICATION_ID) {
+            removedDeliveredIds.add(d.id);
+          }
+        } else if (
+          doesExtraMatchRoutine(extra, routineId) ||
+          knownNumericIds.includes(d.id)
+        ) {
+          removedDeliveredIds.add(d.id);
+        }
+      }
+      if (removedDeliveredIds.size > 0) {
+        await LocalNotifications.removeDeliveredNotifications({
+          notifications: Array.from(removedDeliveredIds).map((id) => ({
+            id,
+            title: '',
+            body: '',
+          })),
+        });
+      }
+    } catch {
+      // Ignorar si no está soportado en entorno web
+    }
+
+    try {
+      const pending = await LocalNotifications.getPending();
+      for (const p of pending.notifications) {
+        const extra = (p.extra ?? {}) as Record<string, unknown>;
+        if (!routineId) {
+          if (p.id !== SIDELOAD_EXPIRY_NOTIFICATION_ID) {
+            cancelledPendingIds.add(p.id);
+          }
+        } else if (doesExtraMatchRoutine(extra, routineId)) {
+          cancelledPendingIds.add(p.id);
+        }
+      }
+      if (cancelledPendingIds.size > 0) {
+        await LocalNotifications.cancel({
+          notifications: Array.from(cancelledPendingIds).map((id) => ({ id })),
+        });
+      }
+    } catch {
+      // Ignorar en entorno web
+    }
+  }
+
+  return {
+    removedDeliveredIds: Array.from(removedDeliveredIds),
+    cancelledPendingIds: Array.from(cancelledPendingIds),
+  };
+}
+
+/**
+ * Cancela explícitamente por ID todas las alarmas/notificaciones (entregadas y pendientes) de una rutina eliminada.
  */
 export async function cancelRoutineNotificationsById(
   routineId: string,
   knownNumericIds: number[] = []
 ): Promise<number[]> {
-  const idsToCancel = new Set<number>(knownNumericIds);
-
-  if (Capacitor.isNativePlatform()) {
-    try {
-      const pending = await LocalNotifications.getPending();
-      for (const p of pending.notifications) {
-        const extra = (p.extra ?? {}) as Record<string, unknown>;
-        if (
-          extra.routineId === routineId ||
-          (typeof extra.routineId === 'string' &&
-            extra.routineId.split(',').includes(routineId))
-        ) {
-          idsToCancel.add(p.id);
-        }
-      }
-      if (idsToCancel.size > 0) {
-        await LocalNotifications.cancel({
-          notifications: Array.from(idsToCancel).map((id) => ({ id })),
-        });
-      }
-    } catch {
-      // Ignorar errores en entorno web
-    }
-  }
+  const { cancelledPendingIds } =
+    await clearRoutineDeliveredAndPendingNotifications(
+      routineId,
+      knownNumericIds
+    );
 
   const prev = await getPreviouslyScheduledIds();
+  const cancelledSet = new Set(cancelledPendingIds);
   await saveScheduledIds({
-    numericIds: prev.numericIds.filter((id) => !idsToCancel.has(id)),
+    numericIds: prev.numericIds.filter((id) => !cancelledSet.has(id)),
     alarmUuids: prev.alarmUuids,
   });
 
-  return Array.from(idsToCancel);
+  return cancelledPendingIds;
+}
+
+/**
+ * Programa el aviso del día 6 tras reinstalar con Sideloadly:
+ * "La app caduca mañana: reinstálala con Sideloadly".
+ */
+export async function scheduleSideloadExpiryWarning(
+  lastReinstallISO: string | undefined,
+  useTimeSensitiveEntitlement: boolean = false
+): Promise<{ scheduled: boolean; triggerDate?: Date }> {
+  if (!lastReinstallISO) return { scheduled: false };
+  const installedMs = new Date(lastReinstallISO).getTime();
+  if (Number.isNaN(installedMs)) return { scheduled: false };
+
+  const day6Date = new Date(installedMs + 6 * 24 * 3600_000);
+  if (day6Date.getTime() <= Date.now()) {
+    return { scheduled: false, triggerDate: day6Date };
+  }
+
+  if (Capacitor.isNativePlatform()) {
+    try {
+      await LocalNotifications.cancel({
+        notifications: [{ id: SIDELOAD_EXPIRY_NOTIFICATION_ID }],
+      });
+      await LocalNotifications.schedule({
+        notifications: [
+          {
+            id: SIDELOAD_EXPIRY_NOTIFICATION_ID,
+            title: '⚠️ Firma de la app',
+            body: 'La app caduca mañana: reinstálala con Sideloadly',
+            sound: DEFAULT_NOTIFICATION_SOUND,
+            silent: false,
+            threadIdentifier: 'sideload-signature',
+            group: 'sideload-signature',
+            schedule: {
+              at: day6Date,
+              allowWhileIdle: true,
+            },
+            extra: {
+              kind: 'sideload_expiry_warning',
+              interruptionLevel: useTimeSensitiveEntitlement
+                ? 'timeSensitive'
+                : 'active',
+            },
+          },
+        ],
+      });
+    } catch {
+      // Ignorar en entorno web
+    }
+  }
+
+  return { scheduled: true, triggerDate: day6Date };
 }
 
 /**
  * Sincroniza de forma determinista todos los avisos en `@capacitor/local-notifications`.
- * 1. Cancela todos los IDs numéricos registrados previamente + cualquier pendiente en el sistema.
- * 2. Agenda la nueva lista de los próximos 7 días (sin dejar alarmas huérfanas), con sonido explícito y soporte en primer plano.
+ * 1. Cancela todos los IDs numéricos registrados previamente + cualquier pendiente en el sistema (conservando el aviso de Sideloadly).
+ * 2. Agenda la nueva lista de los próximos 7 días (sin dejar alarmas huérfanas), con agrupación por rutina y soporte en primer plano.
  */
 export async function syncSystemNotifications(
   prompts: ScheduledPrompt[],
@@ -374,7 +623,9 @@ export async function syncSystemNotifications(
       const pending = await LocalNotifications.getPending();
       const idsToCancel = new Set<number>(prev.numericIds);
       for (const p of pending.notifications) {
-        idsToCancel.add(p.id);
+        if (p.id !== SIDELOAD_EXPIRY_NOTIFICATION_ID) {
+          idsToCancel.add(p.id);
+        }
       }
       if (idsToCancel.size > 0) {
         await LocalNotifications.cancel({
@@ -388,6 +639,13 @@ export async function syncSystemNotifications(
             buildLocalNotificationPayload(p, settings)
           ),
         });
+      }
+
+      if (settings.lastSideloadReinstallISO) {
+        await scheduleSideloadExpiryWarning(
+          settings.lastSideloadReinstallISO,
+          settings.useTimeSensitiveEntitlement
+        );
       }
     } catch {
       // Ignorar errores de plugin en entorno web
@@ -436,6 +694,8 @@ export async function scheduleTestNotificationInOneMinute(
             body,
             sound: DEFAULT_NOTIFICATION_SOUND,
             silent: false,
+            threadIdentifier: 'diagnostic-test',
+            group: 'diagnostic-test',
             schedule: {
               at: targetDate,
               allowWhileIdle: true,
@@ -500,6 +760,8 @@ export async function scheduleTestAlarmInOneMinute(
             body,
             sound: DEFAULT_NOTIFICATION_SOUND,
             silent: false,
+            threadIdentifier: 'diagnostic-test',
+            group: 'diagnostic-test',
             schedule: {
               at: targetDate,
               allowWhileIdle: true,

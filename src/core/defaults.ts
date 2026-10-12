@@ -9,6 +9,7 @@ export const DEFAULT_GLOBAL_SETTINGS: GlobalSettings = {
   dermastampWeekday: 0, // Domingo
   dermastampTimeHHMM: '20:00',
   useTimeSensitiveEntitlement: false,
+  maxInsistenceCount: 6,
 };
 
 export function createInitialRoutines(

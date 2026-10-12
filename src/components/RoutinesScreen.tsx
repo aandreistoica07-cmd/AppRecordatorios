@@ -131,7 +131,10 @@ export const RoutinesScreen: React.FC<RoutinesScreenProps> = ({
 
   const openNewBlockingRuleSheet = () => {
     const src = routines.find((r) => r.id === 'dermastamp') ?? routines[0];
-    const tgt = routines.find((r) => r.id === 'minoxidil') ?? routines[0];
+    const tgt =
+      routines.find((r) => r.id === 'minoxidil' && r.id !== src?.id) ??
+      routines.find((r) => r.id !== src?.id) ??
+      routines[0];
     setIsNewRule(true);
     setEditingRule({
       id: `rule-${Date.now()}`,
@@ -144,6 +147,9 @@ export const RoutinesScreen: React.FC<RoutinesScreenProps> = ({
 
   const handleSaveRuleSheet = () => {
     if (!editingRule) return;
+    if (editingRule.sourceRoutineId === editingRule.targetRoutineId) {
+      return;
+    }
     const srcName =
       routines
         .find((r) => r.id === editingRule.sourceRoutineId)

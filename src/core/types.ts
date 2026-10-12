@@ -31,6 +31,8 @@ export interface RoutineConfig {
   insistIntervalMinutes: number;
   /** Duración máxima de insistencia en minutos (ej. 60 para pastilla mañana, 180 para otras) */
   insistDurationMinutes: number;
+  /** Máximo de avisos de insistencia por ráfaga (por defecto 6) */
+  maxInsistenceCount?: number;
   /** Segundo aviso opcional en el día si no se ha marcado como hecha (ej. Pastilla tarde 15:30) */
   secondarySchedule?: SecondaryScheduleConfig;
   /** Pasos secuenciales obligatorios antes de poder marcar Hecho (ej. Dermastamp) */
@@ -64,6 +66,12 @@ export interface RoutineDayRecord {
   completedAtISO?: string;
   /** Pasos del checklist completados en ese día */
   completedChecklistSteps?: string[];
+  /** Número de veces que se ha pospuesto el aviso principal de la tarea en ese día */
+  postponeCount?: number;
+  /** Hora desplazada actual del aviso principal tras posponer la tarea (formato HH:MM) */
+  postponedPrimaryTimeHHMM?: string;
+  /** Instante ISO exacto del aviso principal tras posponer la tarea (soporta tope a medianoche 00:00 y DST) */
+  postponedPrimaryAtISO?: string;
   /** Número de veces que se ha pulsado "No estoy en casa" en ese día */
   notAtHomePostponeCount?: number;
   /** Hora desplazada actual del aviso de tarde tras pulsar "No estoy en casa" (formato HH:MM) */
@@ -82,6 +90,11 @@ export interface SystemNotificationPermissions {
   alerts: PermissionGrantLabel;
   sound: PermissionGrantLabel;
   badges: PermissionGrantLabel;
+}
+
+export interface AlarmKitStatus {
+  available: boolean;
+  authorized: boolean;
 }
 
 export type ActiveNoticeMode =
@@ -106,6 +119,10 @@ export interface GlobalSettings {
   dermastampWeekday: number; // 0-6 (Por defecto 0 = Domingo)
   dermastampTimeHHMM: string; // Por defecto '20:00'
   useTimeSensitiveEntitlement: boolean; // Por defecto false para Apple ID gratuito
+  /** Máximo configurable de avisos de insistencia por ráfaga (por defecto 6) */
+  maxInsistenceCount?: number;
+  /** Fecha ISO de la última reinstalación con Sideloadly para aviso al día 6 y cuenta atrás de 7 días */
+  lastSideloadReinstallISO?: string;
 }
 
 export type PromptDeliveryChannel = 'alarmkit' | 'local_notification';
@@ -116,6 +133,12 @@ export type PromptKind =
   | 'secondary_primary'
   | 'secondary_insistence'
   | 'pause_recovery';
+
+export type NotificationActionId =
+  | 'DONE'
+  | 'POSTPONE_1H'
+  | 'PAUSE_2H'
+  | 'NOT_AT_HOME';
 
 export interface ScheduledPrompt {
   /** ID determinista legible: routineId__dateKey__kind__index */
@@ -135,7 +158,7 @@ export interface ScheduledPrompt {
   blockedReason?: string;
   blockedByCompletedAtISO?: string;
   /** Botones de acción asociados al aviso */
-  actions: ('DONE' | 'NOT_AT_HOME')[];
+  actions: NotificationActionId[];
 }
 
 export interface ScheduleComputationResult {

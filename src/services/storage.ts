@@ -17,7 +17,7 @@ import type {
   ScheduleType,
 } from '../core/types';
 
-export const CURRENT_SCHEMA_VERSION = 2;
+export const CURRENT_SCHEMA_VERSION = 3;
 
 const KEYS = {
   SCHEMA_VERSION: 'rutinas_schema_version',
@@ -72,7 +72,7 @@ function resolveKnownPresetName(routineId: string): string {
 
 /**
  * Función pura de migración y saneamiento del estado guardado.
- * Garantiza que reinstalar la app encima de una versión previa (v0/v1 o datos parciales)
+ * Garantiza que reinstalar la app encima de una versión previa (v0/v1/v2 o datos parciales)
  * nunca rompa el arranque, completando campos nuevos y descartando entradas corruptas.
  */
 export function migrateAndSanitizeState(raw: {
@@ -112,6 +112,16 @@ export function migrateAndSanitizeState(raw: {
       typeof rawSettings.useTimeSensitiveEntitlement === 'boolean'
         ? rawSettings.useTimeSensitiveEntitlement
         : DEFAULT_GLOBAL_SETTINGS.useTimeSensitiveEntitlement,
+    maxInsistenceCount:
+      typeof rawSettings.maxInsistenceCount === 'number' &&
+      Number.isInteger(rawSettings.maxInsistenceCount) &&
+      rawSettings.maxInsistenceCount >= 0 &&
+      rawSettings.maxInsistenceCount <= 30
+        ? rawSettings.maxInsistenceCount
+        : DEFAULT_GLOBAL_SETTINGS.maxInsistenceCount ?? 6,
+    lastSideloadReinstallISO: isValidISO(rawSettings.lastSideloadReinstallISO)
+      ? rawSettings.lastSideloadReinstallISO
+      : undefined,
   };
 
   const defaultRoutines = createInitialRoutines(settings);
@@ -212,6 +222,10 @@ export function migrateAndSanitizeState(raw: {
           r.insistDurationMinutes > 0
             ? r.insistDurationMinutes
             : presetMatch?.insistDurationMinutes ?? 60,
+        maxInsistenceCount:
+          typeof r.maxInsistenceCount === 'number' && r.maxInsistenceCount >= 0
+            ? r.maxInsistenceCount
+            : presetMatch?.maxInsistenceCount,
         secondarySchedule,
         checklistSteps,
         allowDiscreetMode:
@@ -237,7 +251,8 @@ export function migrateAndSanitizeState(raw: {
       if (
         typeof br.id !== 'string' ||
         typeof br.sourceRoutineId !== 'string' ||
-        typeof br.targetRoutineId !== 'string'
+        typeof br.targetRoutineId !== 'string' ||
+        br.sourceRoutineId === br.targetRoutineId
       ) {
         continue;
       }
@@ -307,6 +322,18 @@ export function migrateAndSanitizeState(raw: {
         cleanRec.completedChecklistSteps = rec.completedChecklistSteps.filter(
           (s): s is string => typeof s === 'string'
         );
+      }
+      if (
+        typeof rec.postponeCount === 'number' &&
+        rec.postponeCount >= 0
+      ) {
+        cleanRec.postponeCount = rec.postponeCount;
+      }
+      if (isValidHHMM(rec.postponedPrimaryTimeHHMM)) {
+        cleanRec.postponedPrimaryTimeHHMM = rec.postponedPrimaryTimeHHMM;
+      }
+      if (isValidISO(rec.postponedPrimaryAtISO)) {
+        cleanRec.postponedPrimaryAtISO = rec.postponedPrimaryAtISO;
       }
       if (
         typeof rec.notAtHomePostponeCount === 'number' &&

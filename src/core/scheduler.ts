@@ -9,6 +9,7 @@ import type {
   ActiveNoticeMode,
   BlockingRule,
   GlobalSettings,
+  NotificationActionId,
   PromptDeliveryChannel,
   PromptKind,
   RoutineConfig,
@@ -19,6 +20,23 @@ import type {
 
 /** Límite máximo de notificaciones locales que permite iOS (64). Usamos 60 por margen de seguridad. */
 export const IOS_MAX_PENDING_NOTIFICATIONS = 60;
+
+/** Límite por defecto de avisos de insistencia por ráfaga tras el aviso principal. */
+export const DEFAULT_MAX_INSISTENCE_COUNT = 6;
+
+/**
+ * Tratamiento del cambio de hora DST (ej. domingo 25 de octubre de 2026 en Europe/Madrid, día de 25 horas):
+ * 1. Alarmas por hora local del reloj (Wall-Clock Time):
+ *    `buildDateFromKeyAndHHMM(dateKey, hhmm)` construye `new Date(year, monthIndex, day, hours, minutes, 0, 0)`
+ *    en la zona horaria local del dispositivo. Así, una alarma fijada a las 09:00, 15:30, 20:00 o 22:00 del
+ *    25 de octubre de 2026 suena exactamente a esa hora del reloj civil (ya en horario CET UTC+1).
+ *    Los desplazamientos de fecha (`addDaysToDateKey`) se calculan al mediodía local (12:00) mediante `setDate`,
+ *    evitando desfases cuando un día civil dura 23 o 25 horas.
+ * 2. Ventanas de bloqueo y duraciones (+1h, +2h, +4h, 24h de dermastamp) por horas reales transcurridas (Elapsed Real Time):
+ *    Las ventanas de bloqueo (`blockDurationHours * 3_600_000` ms) y posposiciones por duración operan sobre
+ *    timestamps UTC (`Date.getTime()`), contando horas físicas reales transcurridas (por ejemplo, 24 h reales
+ *    desde el sábado 24/10 a las 21:30 CEST concluyen el domingo 25/10 a las 20:30 CET al existir una hora extra).
+ */
 
 export function parseHHMM(hhmm: string): { hours: number; minutes: number } {
   const [hStr, mStr] = hhmm.split(':');
@@ -81,21 +99,67 @@ export function resolveRoutinePrimaryHHMM(
 }
 
 /**
+ * Calcula el instante exacto del tope de la hora de dormir (`sleepTimeHHMM`) para una jornada `dateKey`.
+ * Si la hora de dormir es de madrugada (00:00..11:59, como el valor por defecto "00:00" o "02:00")
+ * o es anterior/igual a la hora base de la rutina en ese día, corresponde al cierre nocturno de esa jornada
+ * (en la fecha civil `addDaysToDateKey(dateKey, 1)` a la hora local `sleepTimeHHMM`).
+ */
+export function resolveSleepCapDate(
+  dateKey: string,
+  settings: GlobalSettings,
+  referenceDate?: Date
+): Date {
+  const { hours } = parseHHMM(settings.sleepTimeHHMM);
+  const sameDayCandidate = buildDateFromKeyAndHHMM(
+    dateKey,
+    settings.sleepTimeHHMM
+  );
+  if (
+    hours < 12 ||
+    (referenceDate && sameDayCandidate.getTime() < referenceDate.getTime())
+  ) {
+    const nextDayKey = addDaysToDateKey(dateKey, 1);
+    return buildDateFromKeyAndHHMM(nextDayKey, settings.sleepTimeHHMM);
+  }
+  return sameDayCandidate;
+}
+
+/**
  * Construye el Date exacto de la alarma principal de una rutina para su `dateKey`.
- * Si la rutina depende de `relative_to_sleep` y la hora de dormir es de madrugada (01:00..05:59)
- * haciendo que la alarma caiga a partir de las 00:00 (ej. dormir 02:00 -> alarma 00:00),
- * pertenece a la noche de ese ciclo pero ocurre al inicio del día siguiente en el reloj civil
- * SOLO si el usuario la concibe como cierre del día; sin embargo, para que a las 22:00 o 00:00
- * sea predecible e inequívoco en cada fecha `dateKey` del calendario, anclamos `HH:MM` directamente
- * en el `dateKey` correspondiente, de modo que cada día natural tiene su toma a la hora calculada (`00:00`, `21:00`, `22:00`, etc.).
+ * Si el registro diario tiene una posposición activa (`postponedPrimaryAtISO` o `postponedPrimaryTimeHHMM`),
+ * devuelve la fecha/hora pospuesta para cancelar las insistencias previas y reprogramar desde esa nueva hora.
  */
 export function resolveRoutinePrimaryDate(
   routine: RoutineConfig,
   dateKey: string,
-  settings: GlobalSettings
+  settings: GlobalSettings,
+  existingRecord?: RoutineDayRecord
 ): Date {
-  const hhmm = resolveRoutinePrimaryHHMM(routine, settings);
-  return buildDateFromKeyAndHHMM(dateKey, hhmm);
+  const baseHHMM = resolveRoutinePrimaryHHMM(routine, settings);
+  const baseDate = buildDateFromKeyAndHHMM(dateKey, baseHHMM);
+
+  if (existingRecord?.postponedPrimaryAtISO) {
+    const parsedMs = new Date(existingRecord.postponedPrimaryAtISO).getTime();
+    if (!Number.isNaN(parsedMs)) {
+      return new Date(parsedMs);
+    }
+  }
+
+  if (existingRecord?.postponedPrimaryTimeHHMM) {
+    const candidate = buildDateFromKeyAndHHMM(
+      dateKey,
+      existingRecord.postponedPrimaryTimeHHMM
+    );
+    if (candidate.getTime() < baseDate.getTime()) {
+      return buildDateFromKeyAndHHMM(
+        addDaysToDateKey(dateKey, 1),
+        existingRecord.postponedPrimaryTimeHHMM
+      );
+    }
+    return candidate;
+  }
+
+  return baseDate;
 }
 
 /**
@@ -256,6 +320,15 @@ export function unmarkRoutineDone(
         dateKey: rec.dateKey,
         status: 'pending',
       };
+      if (rec.postponeCount !== undefined) {
+        reverted.postponeCount = rec.postponeCount;
+      }
+      if (rec.postponedPrimaryTimeHHMM !== undefined) {
+        reverted.postponedPrimaryTimeHHMM = rec.postponedPrimaryTimeHHMM;
+      }
+      if (rec.postponedPrimaryAtISO !== undefined) {
+        reverted.postponedPrimaryAtISO = rec.postponedPrimaryAtISO;
+      }
       if (rec.notAtHomePostponeCount !== undefined) {
         reverted.notAtHomePostponeCount = rec.notAtHomePostponeCount;
       }
@@ -281,7 +354,8 @@ export function unmarkRoutineDone(
         const primaryDate = resolveRoutinePrimaryDate(
           targetRoutine,
           rec.dateKey,
-          settings
+          settings,
+          rec
         );
         const blockCheck = findActiveBlockForTimestamp(
           targetRoutine.id,
@@ -381,6 +455,148 @@ export function deleteRoutineAndCleanup(params: {
     records: nextRecords,
     cancelledNumericIds,
   };
+}
+
+export type PostponeTaskInputMode =
+  | { type: 'duration'; durationMinutes: number }
+  | { type: 'add_hours'; hours: number }
+  | { type: 'until_time'; targetHHMM: string };
+
+/**
+ * Posponer por tarea (sirve para cualquier rutina: minoxidil, pastilla, dermastamp y nuevas):
+ * - Cancela sus insistencias previas al desplazar la hora del aviso principal (`postponedPrimaryAtISO` / `postponedPrimaryTimeHHMM`).
+ * - Soporta posponer por duración (+1 h, +2 h, +4 h) o hasta una hora concreta (`targetHHMM`).
+ * - Aplica tope máximo en la hora de dormir global (`settings.sleepTimeHHMM`).
+ */
+export function postponeRoutineTask(params: {
+  routine: RoutineConfig;
+  existingRecord: RoutineDayRecord | undefined;
+  dateKey: string;
+  settings: GlobalSettings;
+  mode?: PostponeTaskInputMode;
+  now?: Date;
+}): {
+  record: RoutineDayRecord;
+  reachedCap: boolean;
+  nextTimeHHMM: string;
+  nextDateISO: string;
+  sleepCapHHMM: string;
+} {
+  const {
+    routine,
+    existingRecord,
+    dateKey,
+    settings,
+    mode = { type: 'duration', durationMinutes: 60 },
+    now,
+  } = params;
+
+  const basePrimaryHHMM = resolveRoutinePrimaryHHMM(routine, settings);
+  const basePrimaryDate = buildDateFromKeyAndHHMM(dateKey, basePrimaryHHMM);
+  const currentScheduledDate = resolveRoutinePrimaryDate(
+    routine,
+    dateKey,
+    settings,
+    existingRecord
+  );
+  const sleepCapDate = resolveSleepCapDate(dateKey, settings, basePrimaryDate);
+  const capMs = Math.max(basePrimaryDate.getTime(), sleepCapDate.getTime());
+
+  let proposedMs: number;
+  if (mode.type === 'duration' || mode.type === 'add_hours') {
+    const durationMinutes =
+      mode.type === 'add_hours' ? mode.hours * 60 : mode.durationMinutes;
+    const deltaMs = durationMinutes * 60_000;
+    let baseMs = currentScheduledDate.getTime();
+    if (now && baseMs < now.getTime()) {
+      const nowMinute = new Date(
+        now.getFullYear(),
+        now.getMonth(),
+        now.getDate(),
+        now.getHours(),
+        now.getMinutes(),
+        0,
+        0
+      );
+      baseMs = Math.max(baseMs, nowMinute.getTime());
+    }
+    proposedMs = baseMs + deltaMs;
+  } else {
+    let candidate = buildDateFromKeyAndHHMM(dateKey, mode.targetHHMM);
+    if (candidate.getTime() < basePrimaryDate.getTime()) {
+      candidate = buildDateFromKeyAndHHMM(
+        addDaysToDateKey(dateKey, 1),
+        mode.targetHHMM
+      );
+    }
+    proposedMs = Math.max(currentScheduledDate.getTime(), candidate.getTime());
+  }
+
+  const clampedMs = Math.min(proposedMs, capMs);
+  const reachedCap = proposedMs >= capMs;
+  const nextDate = new Date(clampedMs);
+  const nextTimeHHMM = formatHHMM(nextDate.getHours(), nextDate.getMinutes());
+  const nextDateISO = nextDate.toISOString();
+
+  const record: RoutineDayRecord = {
+    ...(existingRecord ?? {
+      routineId: routine.id,
+      dateKey,
+      status: 'pending',
+    }),
+    routineId: routine.id,
+    routineName: routine.name,
+    dateKey,
+    status:
+      existingRecord?.status === 'completed' ? 'completed' : 'pending',
+    postponeCount: (existingRecord?.postponeCount ?? 0) + 1,
+    postponedPrimaryTimeHHMM: nextTimeHHMM,
+    postponedPrimaryAtISO: nextDateISO,
+  };
+  delete record.blockReason;
+  delete record.blockedByRoutineId;
+
+  return {
+    record,
+    reachedCap,
+    nextTimeHHMM,
+    nextDateISO,
+    sleepCapHHMM: settings.sleepTimeHHMM,
+  };
+}
+
+/**
+ * Restablece cualquier posposición activa de una tarea en `dateKey` para devolverla a su horario original.
+ */
+export function resetRoutinePostpone(
+  recordOrRoutine: RoutineDayRecord | RoutineConfig | undefined,
+  existingRecord?: RoutineDayRecord,
+  dateKey?: string
+): RoutineDayRecord | undefined {
+  if (!recordOrRoutine) return undefined;
+  if ('dateKey' in recordOrRoutine && 'status' in recordOrRoutine) {
+    const clean: RoutineDayRecord = { ...recordOrRoutine };
+    delete clean.postponeCount;
+    delete clean.postponedPrimaryTimeHHMM;
+    delete clean.postponedPrimaryAtISO;
+    return clean;
+  }
+  const routine = recordOrRoutine;
+  const clean: RoutineDayRecord = {
+    ...(existingRecord ?? {
+      routineId: routine.id,
+      dateKey: dateKey ?? '',
+      status: 'pending',
+    }),
+    routineId: routine.id,
+    routineName: routine.name,
+    dateKey: dateKey ?? existingRecord?.dateKey ?? '',
+    status: existingRecord?.status === 'completed' ? 'completed' : 'pending',
+  };
+  delete clean.postponeCount;
+  delete clean.postponedPrimaryTimeHHMM;
+  delete clean.postponedPrimaryAtISO;
+  return clean;
 }
 
 /**
@@ -532,13 +748,28 @@ export interface ComputeScheduleInput {
   horizonDays?: number; // Por defecto 7 días
 }
 
+const DEFAULT_TASK_ACTIONS: NotificationActionId[] = [
+  'DONE',
+  'POSTPONE_1H',
+  'PAUSE_2H',
+];
+
+const AFTERNOON_NOT_AT_HOME_ACTIONS: NotificationActionId[] = [
+  'DONE',
+  'POSTPONE_1H',
+  'PAUSE_2H',
+  'NOT_AT_HOME',
+];
+
 /**
  * Motor principal puro:
  * Calcula todas las alarmas e insistencias de los próximos 7 días,
  * cancela/omite automáticamente cualquier alarma de Minoxidil que caiga dentro de las 24h exactas
  * desde que se marcó el Dermastamp (si el Minoxidil no se había marcado ya antes),
+ * gestiona la posposición por tarea (+1h, +2h, +4h o hasta una hora concreta con tope en la hora de dormir),
  * gestiona el doble aviso de la Pastilla (mañana 09:00 + tarde 15:30 + posposición "No estoy en casa" hasta 22:00),
- * gestiona el Modo Discreto y la Pausa con alarma única de recuperación.
+ * limita la ráfaga de insistencias al máximo configurable (por defecto 6),
+ * y gestiona el Modo Discreto y la Pausa con un único aviso resumen de recuperación.
  */
 export function computeSchedule(
   input: ComputeScheduleInput
@@ -567,12 +798,12 @@ export function computeSchedule(
   const candidateActivePrompts: ScheduledPrompt[] = [];
   const autoOmittedRecords: RoutineDayRecord[] = [];
 
-  // Si hay una pausa activa ("Pausar avisos hasta HH:MM"), guardamos si alguna tarea de hoy quedó silenciada durante la pausa
+  // Si hay una pausa activa ("Pausar avisos hasta HH:MM"), guardamos las tareas que quedaron silenciadas durante la pausa
   const pauseUntilMs =
     effectiveMode.type === 'paused'
       ? new Date(effectiveMode.untilISO).getTime()
       : null;
-  const pausedPendingRoutinesToday = new Set<string>();
+  const pausedPendingRoutines = new Map<string, string>();
 
   for (let dayOffset = 0; dayOffset < horizonDays; dayOffset++) {
     const dateKey = addDaysToDateKey(todayKey, dayOffset);
@@ -588,7 +819,12 @@ export function computeSchedule(
         continue;
       }
 
-      const primaryDate = resolveRoutinePrimaryDate(routine, dateKey, settings);
+      const primaryDate = resolveRoutinePrimaryDate(
+        routine,
+        dateKey,
+        settings,
+        existingRec
+      );
       const blockCheck = findActiveBlockForTimestamp(
         routine.id,
         primaryDate,
@@ -605,6 +841,12 @@ export function computeSchedule(
           blockReason: blockCheck.rule.statusLabel,
           blockedByRoutineId: blockCheck.rule.sourceRoutineId,
         };
+        if (existingRec?.postponedPrimaryTimeHHMM) {
+          omittedRec.postponedPrimaryTimeHHMM =
+            existingRec.postponedPrimaryTimeHHMM;
+          omittedRec.postponedPrimaryAtISO = existingRec.postponedPrimaryAtISO;
+          omittedRec.postponeCount = existingRec.postponeCount;
+        }
         autoOmittedRecords.push(omittedRec);
         recordMap.set(mapKey, omittedRec);
 
@@ -627,7 +869,7 @@ export function computeSchedule(
           blocked: true,
           blockedReason: blockCheck.rule.statusLabel,
           blockedByCompletedAtISO: blockCheck.sourceRecord.completedAtISO,
-          actions: ['DONE'],
+          actions: DEFAULT_TASK_ACTIONS,
         });
         continue;
       }
@@ -656,10 +898,15 @@ export function computeSchedule(
         kind: 'primary',
         channel: primaryChannel,
         blocked: false,
-        actions: ['DONE'],
+        actions: DEFAULT_TASK_ACTIONS,
       });
 
-      // Generar ventana de alarma principal + insistencias
+      const maxInsistenceCount =
+        routine.maxInsistenceCount ??
+        settings.maxInsistenceCount ??
+        DEFAULT_MAX_INSISTENCE_COUNT;
+
+      // Generar ventana de alarma principal + insistencias (limitada a maxInsistenceCount, por defecto 6)
       appendPromptSeries({
         routine,
         dateKey,
@@ -672,11 +919,12 @@ export function computeSchedule(
           effectiveMode
         ),
         durationMinutes: routine.insistDurationMinutes,
-        actions: ['DONE'],
+        maxInsistenceCount,
+        actions: DEFAULT_TASK_ACTIONS,
         nowMs,
         pauseUntilMs,
         todayKey,
-        pausedPendingRoutinesToday,
+        pausedPendingRoutines,
         effectiveMode,
         blockingRules,
         records,
@@ -692,6 +940,10 @@ export function computeSchedule(
           dateKey,
           effectiveAfternoonHHMM
         );
+
+        const secActions = sec.allowNotAtHomePostpone
+          ? AFTERNOON_NOT_AT_HOME_ACTIONS
+          : DEFAULT_TASK_ACTIONS;
 
         const secDetId = buildDeterministicStringId(
           routine.id,
@@ -710,9 +962,7 @@ export function computeSchedule(
           kind: 'secondary_primary',
           channel: resolvePromptChannel(routine, secondaryDate, effectiveMode),
           blocked: false,
-          actions: sec.allowNotAtHomePostpone
-            ? ['DONE', 'NOT_AT_HOME']
-            : ['DONE'],
+          actions: secActions,
         });
 
         appendPromptSeries({
@@ -728,13 +978,12 @@ export function computeSchedule(
             sec.insistIntervalMinutes
           ),
           durationMinutes: sec.insistDurationMinutes,
-          actions: sec.allowNotAtHomePostpone
-            ? ['DONE', 'NOT_AT_HOME']
-            : ['DONE'],
+          maxInsistenceCount,
+          actions: secActions,
           nowMs,
           pauseUntilMs,
           todayKey,
-          pausedPendingRoutinesToday,
+          pausedPendingRoutines,
           effectiveMode,
           blockingRules,
           records,
@@ -744,13 +993,13 @@ export function computeSchedule(
     }
   }
 
-  // Si hay una pausa activa y existen tareas del día pendientes cuya hora ya pasó o caía dentro de la pausa,
-  // al terminar la pausa salta UNA ÚNICA alarma de recuperación (no todas a la vez).
+  // Si hay una pausa activa y existen tareas pendientes cuya hora ya pasó o caía dentro de la pausa,
+  // al terminar la pausa salta UN ÚNICO aviso resumen de recuperación (no todas a la vez).
   if (
     effectiveMode.type === 'paused' &&
     pauseUntilMs !== null &&
     pauseUntilMs > nowMs &&
-    pausedPendingRoutinesToday.size > 0
+    pausedPendingRoutines.size > 0
   ) {
     const recoveryDate = new Date(pauseUntilMs);
     const recoveryDetId = buildDeterministicStringId(
@@ -759,18 +1008,25 @@ export function computeSchedule(
       'pause_recovery',
       0
     );
+    const pendingIds = Array.from(pausedPendingRoutines.keys());
+    const pendingNames = Array.from(pausedPendingRoutines.values());
+    const count = pendingIds.length;
+
     candidateActivePrompts.push({
       deterministicId: recoveryDetId,
       notificationNumericId: toDeterministicNumericId(recoveryDetId),
       alarmUuid: toDeterministicUuid(recoveryDetId),
-      routineId: Array.from(pausedPendingRoutinesToday).join(','),
-      routineName: `Recuperación (${pausedPendingRoutinesToday.size} pendiente${pausedPendingRoutinesToday.size > 1 ? 's' : ''})`,
+      routineId: pendingIds.join(','),
+      routineName:
+        count === 1
+          ? `Recuperación: ${pendingNames[0]}`
+          : `Recuperación (${count} pendientes: ${pendingNames.join(', ')})`,
       dateKey: todayKey,
       scheduledAtISO: recoveryDate.toISOString(),
       kind: 'pause_recovery',
       channel: 'alarmkit',
       blocked: false,
-      actions: ['DONE'],
+      actions: DEFAULT_TASK_ACTIONS,
     });
   }
 
@@ -853,11 +1109,12 @@ interface AppendSeriesParams {
   insistenceKind: PromptKind;
   intervalMinutes: number;
   durationMinutes: number;
-  actions: ('DONE' | 'NOT_AT_HOME')[];
+  maxInsistenceCount: number;
+  actions: NotificationActionId[];
   nowMs: number;
   pauseUntilMs: number | null;
   todayKey: string;
-  pausedPendingRoutinesToday: Set<string>;
+  pausedPendingRoutines: Map<string, string>;
   effectiveMode: ActiveNoticeMode;
   blockingRules: BlockingRule[];
   records: RoutineDayRecord[];
@@ -873,11 +1130,12 @@ function appendPromptSeries(params: AppendSeriesParams): void {
     insistenceKind,
     intervalMinutes,
     durationMinutes,
+    maxInsistenceCount,
     actions,
     nowMs,
     pauseUntilMs,
     todayKey,
-    pausedPendingRoutinesToday,
+    pausedPendingRoutines,
     effectiveMode,
     blockingRules,
     records,
@@ -885,7 +1143,9 @@ function appendPromptSeries(params: AppendSeriesParams): void {
   } = params;
 
   const safeInterval = Math.max(1, intervalMinutes);
-  const totalSteps = Math.floor(durationMinutes / safeInterval);
+  const rawSteps = Math.floor(durationMinutes / safeInterval);
+  const maxAllowedInsistences = Math.max(0, Math.floor(maxInsistenceCount));
+  const totalSteps = Math.min(rawSteps, maxAllowedInsistences);
 
   for (let step = 0; step <= totalSteps; step++) {
     const promptTimeMs = baseDate.getTime() + step * safeInterval * 60_000;
@@ -902,11 +1162,11 @@ function appendPromptSeries(params: AppendSeriesParams): void {
       continue;
     }
 
-    // Si hay una pausa activa hasta HH:MM y el aviso cae antes de que termine la pausa:
-    // Se silencia por completo y se registra la tarea para la alarma única de recuperación al terminar la pausa.
+    // Si hay una pausa activa hasta HH:MM y el aviso cae antes o en el límite de la pausa:
+    // Se silencia por completo y se registra la tarea para el aviso único resumen al terminar la pausa.
     if (pauseUntilMs !== null && promptTimeMs <= pauseUntilMs) {
-      if (dateKey === todayKey) {
-        pausedPendingRoutinesToday.add(routine.id);
+      if (dateKey === todayKey || promptTimeMs >= nowMs) {
+        pausedPendingRoutines.set(routine.id, routine.name);
       }
       continue;
     }
@@ -988,7 +1248,12 @@ export function evaluateDaySummary(
     }
 
     // Comprobar dinámicamente si la hora de la alarma de ese día caía en las 24h exactas de un dermastamp completado
-    const primaryDate = resolveRoutinePrimaryDate(routine, dateKey, settings);
+    const primaryDate = resolveRoutinePrimaryDate(
+      routine,
+      dateKey,
+      settings,
+      existing
+    );
     const blockCheck = findActiveBlockForTimestamp(
       routine.id,
       primaryDate,
@@ -1188,7 +1453,12 @@ export function computeDueProgressForDay(
     const existing = records.find(
       (r) => r.routineId === routine.id && r.dateKey === todayKey
     );
-    const primaryDate = resolveRoutinePrimaryDate(routine, todayKey, settings);
+    const primaryDate = resolveRoutinePrimaryDate(
+      routine,
+      todayKey,
+      settings,
+      existing
+    );
     const isDue = primaryDate.getTime() <= nowMs;
 
     if (existing?.status === 'completed') {
@@ -1291,7 +1561,12 @@ export function computeWeeklyCompliancePercentage(
       const existing = records.find(
         (r) => r.routineId === routine.id && r.dateKey === key
       );
-      const primaryDate = resolveRoutinePrimaryDate(routine, key, settings);
+      const primaryDate = resolveRoutinePrimaryDate(
+        routine,
+        key,
+        settings,
+        existing
+      );
 
       if (existing?.status === 'completed') {
         evaluableCount++;
@@ -1398,6 +1673,75 @@ export function formatRelativeDateLabel(
 export function formatMonthYearEs(year: number, monthZeroIndexed: number): string {
   const monthName = FULL_MONTHS_ES[monthZeroIndexed] ?? 'Octubre';
   return `${monthName} de ${year}`;
+}
+
+export interface SideloadSignatureStatus {
+  hasRecord: boolean;
+  configured: boolean;
+  installedAtISO?: string;
+  day6WarningAtISO?: string;
+  warningAtISO?: string;
+  expiresAtISO?: string;
+  daysRemaining: number | null;
+  remainingDays: number | null;
+  expired: boolean;
+}
+
+/**
+ * Calcula los días restantes de la firma gratuita de 7 días (Sideloadly)
+ * y el instante del aviso preventivo en el día 6 ("La app caduca mañana: reinstálala con Sideloadly").
+ */
+export function computeSideloadSignatureStatus(
+  arg1: string | Date | undefined,
+  arg2?: string | Date
+): SideloadSignatureStatus {
+  const now = arg1 instanceof Date ? arg1 : arg2 instanceof Date ? arg2 : new Date();
+  const lastReinstallISO =
+    typeof arg1 === 'string'
+      ? arg1
+      : typeof arg2 === 'string'
+      ? arg2
+      : undefined;
+
+  if (!lastReinstallISO) {
+    return {
+      hasRecord: false,
+      configured: false,
+      daysRemaining: null,
+      remainingDays: null,
+      expired: false,
+    };
+  }
+  const installedMs = new Date(lastReinstallISO).getTime();
+  if (Number.isNaN(installedMs)) {
+    return {
+      hasRecord: false,
+      configured: false,
+      daysRemaining: null,
+      remainingDays: null,
+      expired: false,
+    };
+  }
+  const day6WarningMs = installedMs + 6 * 24 * 3600_000;
+  const expiresMs = installedMs + 7 * 24 * 3600_000;
+  const diffMs = expiresMs - now.getTime();
+  const expired = diffMs <= 0;
+  const daysRemaining = expired
+    ? 0
+    : Math.min(7, Math.max(0, Math.ceil(diffMs / (24 * 3600_000))));
+  const warningISO = new Date(day6WarningMs).toISOString();
+
+  return {
+    hasRecord: true,
+    configured: true,
+    installedAtISO: new Date(installedMs).toISOString(),
+    day6WarningAtISO: warningISO,
+    warningAtISO: warningISO,
+    expiresAtISO: new Date(expiresMs).toISOString(),
+    daysRemaining,
+    remainingDays: daysRemaining,
+    expired,
+  };
 }
 
 // @end: Scheduler-History-And-Streaks

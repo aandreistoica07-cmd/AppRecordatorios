@@ -11,11 +11,14 @@ import {
   computeCurrentStreakDays,
   computeDueProgressForDay,
   computeSchedule,
+  computeSideloadSignatureStatus,
   computeWeeklyCompliancePercentage,
   deleteRoutineAndCleanup,
   evaluateDaySummary,
   markRoutineDone,
   postponeRoutineNotAtHome,
+  postponeRoutineTask,
+  resetRoutinePostpone,
   resolveRoutinePrimaryHHMM,
   toggleChecklistStep,
   unmarkRoutineDone,
@@ -978,6 +981,335 @@ describe('Motor puro de rutinas, bloqueos 24h, posposición y modos', () => {
     expect(migrated.records[0].routineName).toBe('Pastilla');
     // Un modo discreto sin untilISO válido se sanea a 'alarm' para no bloquear el arranque
     expect(migrated.noticeMode.type).toBe('alarm');
+  });
+
+  it('(16) Posponer por tarea ("postponeRoutineTask"): sirve para cualquier rutina, cancela insistencias previas y reprograma con tope a la hora de dormir', () => {
+    const settings: GlobalSettings = {
+      ...DEFAULT_GLOBAL_SETTINGS,
+      sleepTimeHHMM: '23:30', // Tope hora de dormir = 23:30; Minoxidil base = 21:30
+    };
+    const routines = createInitialRoutines(settings);
+    const minoxidil = routines.find((r) => r.id === 'minoxidil')!;
+    const dateKey = '2026-10-12';
+
+    // A las 21:45 (cuando ya habría sonado el aviso principal de 21:30 y la 1ª insistencia de 21:40),
+    // el usuario pospone +1 h -> nuevo aviso principal a las 22:45.
+    const now2145 = buildDateFromKeyAndHHMM(dateKey, '21:45');
+    const p1 = postponeRoutineTask({
+      routine: minoxidil,
+      existingRecord: undefined,
+      dateKey,
+      now: now2145,
+      settings,
+      mode: { type: 'add_hours', hours: 1 },
+    });
+    expect(p1.nextTimeHHMM).toBe('22:45');
+    expect(p1.reachedCap).toBe(false);
+    expect(p1.record.postponeCount).toBe(1);
+
+    // Verificamos que las insistencias previas (21:50, 22:00...) ya NO existen y el nuevo aviso principal es a las 22:45
+    const schedAfterP1 = computeSchedule({
+      now: now2145,
+      routines,
+      blockingRules: DEFAULT_BLOCKING_RULES,
+      records: [p1.record],
+      settings,
+      noticeMode: { type: 'alarm' },
+    });
+    const minoxPromptsToday = schedAfterP1.activePromptsToSchedule.filter(
+      (p) => p.routineId === 'minoxidil' && p.dateKey === dateKey
+    );
+    expect(minoxPromptsToday.length).toBeGreaterThan(0);
+    expect(minoxPromptsToday[0].kind).toBe('primary');
+    expect(minoxPromptsToday[0].scheduledAtISO).toBe(
+      buildDateFromKeyAndHHMM(dateKey, '22:45').toISOString()
+    );
+    expect(minoxPromptsToday[0].actions).toEqual([
+      'DONE',
+      'POSTPONE_1H',
+      'PAUSE_2H',
+    ]);
+
+    // 2ª posposición (+1 h desde las 22:45 -> pediría 23:45, pero se trunca al tope de dormir 23:30)
+    const p2 = postponeRoutineTask({
+      routine: minoxidil,
+      existingRecord: p1.record,
+      dateKey,
+      now: now2145,
+      settings,
+      mode: { type: 'add_hours', hours: 1 },
+    });
+    expect(p2.nextTimeHHMM).toBe('23:30');
+    expect(p2.reachedCap).toBe(true);
+    expect(p2.record.postponeCount).toBe(2);
+
+    // 3ª posposición (+2 h estando ya en el tope 23:30) -> se mantiene clavado en 23:30
+    const p3 = postponeRoutineTask({
+      routine: minoxidil,
+      existingRecord: p2.record,
+      dateKey,
+      now: now2145,
+      settings,
+      mode: { type: 'add_hours', hours: 2 },
+    });
+    expect(p3.nextTimeHHMM).toBe('23:30');
+    expect(p3.reachedCap).toBe(true);
+    expect(p3.record.postponeCount).toBe(3);
+
+    // También funciona con "until_time" en una rutina personalizada o pastilla y se puede restablecer
+    const pastilla = routines.find((r) => r.id === 'pastilla')!;
+    const pCustom = postponeRoutineTask({
+      routine: pastilla,
+      existingRecord: undefined,
+      dateKey,
+      now: buildDateFromKeyAndHHMM(dateKey, '09:10'),
+      settings,
+      mode: { type: 'until_time', targetHHMM: '11:45' },
+    });
+    expect(pCustom.nextTimeHHMM).toBe('11:45');
+    expect(pCustom.reachedCap).toBe(false);
+
+    const resetRec = resetRoutinePostpone(pCustom.record);
+    expect(resetRec?.postponedPrimaryTimeHHMM).toBeUndefined();
+    expect(resetRec?.postponedPrimaryAtISO).toBeUndefined();
+  });
+
+  it('(17) Pausa activa cancela todos los avisos en la ventana y emite UN SOLO aviso resumen al terminar cuando hay varias tareas pendientes + límite de ráfaga maxInsistenceCount', () => {
+    const settings: GlobalSettings = {
+      ...DEFAULT_GLOBAL_SETTINGS,
+      pillMorningTimeHHMM: '09:00',
+      dermastampWeekday: 0, // Domingo
+      dermastampTimeHHMM: '10:00',
+      sleepTimeHHMM: '00:00', // Minoxidil 22:00
+      maxInsistenceCount: 4, // Límite configurable (probamos con 4)
+    };
+    const routines = createInitialRoutines(settings);
+    const sundayKey = '2026-10-11';
+    const now0850 = buildDateFromKeyAndHHMM(sundayKey, '08:50');
+
+    // Pausamos desde las 08:50 hasta las 12:00 del domingo:
+    // Tanto Pastilla (09:00) como Dermastamp (10:00) caen dentro de la pausa y siguen pendientes.
+    const pauseUntil = buildDateFromKeyAndHHMM(sundayKey, '12:00');
+    const pausedMode: ActiveNoticeMode = {
+      type: 'paused',
+      startedAtISO: now0850.toISOString(),
+      untilISO: pauseUntil.toISOString(),
+      targetHHMM: '12:00',
+    };
+
+    const schedPaused = computeSchedule({
+      now: now0850,
+      routines,
+      blockingRules: DEFAULT_BLOCKING_RULES,
+      records: [],
+      settings,
+      noticeMode: pausedMode,
+    });
+
+    // 1. Ningún aviso suena entre las 08:50 y las 12:00 (todos están cancelados en la ventana de pausa)
+    const promptsDuringPause = schedPaused.activePromptsToSchedule.filter(
+      (p) =>
+        new Date(p.scheduledAtISO).getTime() >= now0850.getTime() &&
+        new Date(p.scheduledAtISO).getTime() < pauseUntil.getTime()
+    );
+    expect(promptsDuringPause).toHaveLength(0);
+
+    // 2. Al terminar la pausa (12:00), se programa UN SOLO aviso resumen ('pause_recovery') para las 2 tareas pendientes (Pastilla y Dermastamp)
+    const recoveryPrompts = schedPaused.activePromptsToSchedule.filter(
+      (p) => p.kind === 'pause_recovery'
+    );
+    expect(recoveryPrompts).toHaveLength(1);
+    expect(recoveryPrompts[0].scheduledAtISO).toBe(pauseUntil.toISOString());
+    expect(recoveryPrompts[0].routineName).toContain('Pastilla');
+    expect(recoveryPrompts[0].routineName).toContain('Dermastamp');
+
+    // 3. Verificamos el límite de ráfaga de insistencias (maxInsistenceCount = 4) en Minoxidil (22:00, fuera de la pausa):
+    // 1 aviso principal + 4 insistencias como máximo = 5 avisos en total para Minoxidil ese día
+    const minoxPrompts = schedPaused.activePromptsToSchedule.filter(
+      (p) => p.routineId === 'minoxidil' && p.dateKey === sundayKey
+    );
+    const minoxInsistences = minoxPrompts.filter(
+      (p) => p.kind === 'insistence'
+    );
+    expect(minoxInsistences).toHaveLength(4);
+  });
+
+  it('(18) Posponer y pausar combinados con el bloqueo de 24h del Dermastamp', () => {
+    const settings: GlobalSettings = {
+      ...DEFAULT_GLOBAL_SETTINGS,
+      sleepTimeHHMM: '00:00', // Minoxidil base = 22:00
+    };
+    const routines = createInitialRoutines(settings);
+    const minoxidil = routines.find((r) => r.id === 'minoxidil')!;
+
+    // Escenario A: Dermastamp se completó el sábado 2026-10-10 a las 22:30 -> bloquea 24h hasta el domingo 2026-10-11 a las 22:30.
+    // El domingo 2026-10-11 a las 22:00 Minoxidil estaría bloqueado (caería a +23.5h).
+    // Si el usuario pospone Minoxidil del domingo +1 h (a las 23:00 del domingo, +24.5h reales desde el Dermastamp),
+    // la nueva hora pospuesta (23:00) cae FUERA de las 24h de bloqueo y SÍ se programa.
+    const satDermastampAt = buildDateFromKeyAndHHMM('2026-10-10', '22:30');
+    const dermastampRecord: RoutineDayRecord = {
+      routineId: 'dermastamp',
+      dateKey: '2026-10-10',
+      status: 'completed',
+      completedAtISO: satDermastampAt.toISOString(),
+      completedChecklistSteps: ['disinfect', 'applied'],
+    };
+
+    const sundayNow = buildDateFromKeyAndHHMM('2026-10-11', '21:00');
+    const postponedMinox = postponeRoutineTask({
+      routine: minoxidil,
+      existingRecord: undefined,
+      dateKey: '2026-10-11',
+      now: sundayNow,
+      settings,
+      mode: { type: 'add_hours', hours: 1 }, // 22:00 + 1h = 23:00
+    });
+    expect(postponedMinox.nextTimeHHMM).toBe('23:00');
+
+    const schedWithPostponedMinox = computeSchedule({
+      now: sundayNow,
+      routines,
+      blockingRules: DEFAULT_BLOCKING_RULES,
+      records: [dermastampRecord, postponedMinox.record],
+      settings,
+      noticeMode: { type: 'alarm' },
+    });
+
+    const sundayMinoxOverview =
+      schedWithPostponedMinox.upcomingSevenDaysOverview.find(
+        (p) => p.routineId === 'minoxidil' && p.dateKey === '2026-10-11'
+      );
+    expect(sundayMinoxOverview?.blocked).toBe(false);
+
+    // Escenario B: Si Dermastamp se completa el domingo a las 21:00 (bloquea hasta lunes 21:00) y además hay una pausa activa hasta las 23:00 del domingo,
+    // el aviso resumen de fin de pausa a las 23:00 NO debe incluir Minoxidil porque Minoxidil está bloqueado por Dermastamp.
+    const sunDermastampRecord: RoutineDayRecord = {
+      routineId: 'dermastamp',
+      dateKey: '2026-10-11',
+      status: 'completed',
+      completedAtISO: buildDateFromKeyAndHHMM('2026-10-11', '21:00').toISOString(),
+      completedChecklistSteps: ['disinfect', 'applied'],
+    };
+    const sunPastillaDone: RoutineDayRecord = {
+      routineId: 'pastilla',
+      dateKey: '2026-10-11',
+      status: 'completed',
+      completedAtISO: buildDateFromKeyAndHHMM('2026-10-11', '09:05').toISOString(),
+    };
+    const pauseOnSundayNight = computeSchedule({
+      now: buildDateFromKeyAndHHMM('2026-10-11', '21:05'),
+      routines,
+      blockingRules: DEFAULT_BLOCKING_RULES,
+      records: [sunDermastampRecord, sunPastillaDone],
+      settings,
+      noticeMode: {
+        type: 'paused',
+        startedAtISO: buildDateFromKeyAndHHMM('2026-10-11', '21:05').toISOString(),
+        untilISO: buildDateFromKeyAndHHMM('2026-10-11', '23:00').toISOString(),
+        targetHHMM: '23:00',
+      },
+    });
+    expect(
+      pauseOnSundayNight.activePromptsToSchedule.filter(
+        (p) => p.kind === 'pause_recovery'
+      )
+    ).toHaveLength(0);
+  });
+
+  it('(19) Cambio de hora DST (domingo 25 de octubre de 2026, zona Europe/Madrid, día de 25 h): alarmas por hora local de reloj y bloqueo de 24 h por horas reales transcurridas', () => {
+    const settings: GlobalSettings = {
+      ...DEFAULT_GLOBAL_SETTINGS,
+      pillMorningTimeHHMM: '09:00',
+      sleepTimeHHMM: '00:00', // Minoxidil a las 22:00 hora local de pared
+    };
+    const routines = createInitialRoutines(settings);
+
+    // Sábado 24 de octubre de 2026 a las 22:00 (CEST, UTC+2 -> 20:00Z) el usuario completa Dermastamp.
+    // El domingo 25 de octubre de 2026 tiene 25 horas reales en Europe/Madrid (a las 03:00 CEST el reloj atrasa a las 02:00 CET, UTC+1).
+    const satOct24_2200 = buildDateFromKeyAndHHMM('2026-10-24', '22:00');
+    const sunOct25_0900 = buildDateFromKeyAndHHMM('2026-10-25', '09:00');
+    const sunOct25_2200 = buildDateFromKeyAndHHMM('2026-10-25', '22:00');
+
+    // 1. Las alarmas del sábado 24 y domingo 25 de octubre se programan respetando la hora local del reloj de pared (09:00 y 22:00 locales)
+    expect(satOct24_2200.getHours()).toBe(22);
+    expect(sunOct25_0900.getHours()).toBe(9);
+    expect(sunOct25_0900.getMinutes()).toBe(0);
+    expect(sunOct25_2200.getHours()).toBe(22);
+    expect(sunOct25_2200.getMinutes()).toBe(0);
+
+    // 2. En Europe/Madrid, entre el sábado 24/10 22:00 (CEST, UTC+2) y el domingo 25/10 22:00 (CET, UTC+1)
+    // transcurren 25 horas reales (o en cualquier zona se mide por epoch ms reales: 24 * 3_600_000 ms).
+    // Si simulamos el instante exacto de completado 25 horas reales antes de sunOct25_2200
+    // (como ocurre en Europe/Madrid al marcar a las 22:00 CEST del sábado 24), han pasado 25 h reales (> 24 h)
+    // y el Minoxidil de las 22:00 CET del domingo 25 NO queda bloqueado; mientras que a las 21:00 CET (+24 h exactas) SÍ sigue bloqueado.
+    const real25HoursBeforeSun2200 = new Date(
+      sunOct25_2200.getTime() - 25 * 3600_000
+    );
+    const real23Hours30MinBeforeSun2200 = new Date(
+      sunOct25_2200.getTime() - 23.5 * 3600_000
+    );
+
+    const schedAfter25RealHours = computeSchedule({
+      now: sunOct25_0900,
+      routines,
+      blockingRules: DEFAULT_BLOCKING_RULES,
+      records: [
+        {
+          routineId: 'dermastamp',
+          dateKey: '2026-10-24',
+          status: 'completed',
+          completedAtISO: real25HoursBeforeSun2200.toISOString(),
+          completedChecklistSteps: ['disinfect', 'applied'],
+        },
+      ],
+      settings,
+      noticeMode: { type: 'alarm' },
+    });
+
+    const minoxSunOct25After25h =
+      schedAfter25RealHours.upcomingSevenDaysOverview.find(
+        (p) => p.routineId === 'minoxidil' && p.dateKey === '2026-10-25'
+      );
+    expect(minoxSunOct25After25h?.blocked).toBe(false);
+
+    const schedAfter23h30mRealHours = computeSchedule({
+      now: sunOct25_0900,
+      routines,
+      blockingRules: DEFAULT_BLOCKING_RULES,
+      records: [
+        {
+          routineId: 'dermastamp',
+          dateKey: '2026-10-24',
+          status: 'completed',
+          completedAtISO: real23Hours30MinBeforeSun2200.toISOString(),
+          completedChecklistSteps: ['disinfect', 'applied'],
+        },
+      ],
+      settings,
+      noticeMode: { type: 'alarm' },
+    });
+
+    const minoxSunOct25After23h30m =
+      schedAfter23h30mRealHours.upcomingSevenDaysOverview.find(
+        (p) => p.routineId === 'minoxidil' && p.dateKey === '2026-10-25'
+      );
+    expect(minoxSunOct25After23h30m?.blocked).toBe(true);
+  });
+
+  it('(20) Firma de la app (Sideloadly 7 días): calcula días restantes y fecha del aviso el día 6', () => {
+    const reinstallDate = buildDateFromKeyAndHHMM('2026-10-10', '10:00');
+    const nowDay2 = buildDateFromKeyAndHHMM('2026-10-12', '11:00'); // Han pasado 2 días y 1h -> quedan 5 días
+
+    const status = computeSideloadSignatureStatus(
+      nowDay2,
+      reinstallDate.toISOString()
+    );
+    expect(status.configured).toBe(true);
+    expect(status.remainingDays).toBe(5);
+    expect(status.expired).toBe(false);
+    expect(status.warningAtISO).toBe(
+      new Date(reinstallDate.getTime() + 6 * 24 * 3600_000).toISOString()
+    );
   });
 });
 

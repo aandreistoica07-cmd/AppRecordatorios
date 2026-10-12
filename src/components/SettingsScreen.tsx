@@ -1,7 +1,12 @@
 // @section: Settings-And-Diagnostics-Screen
 
 import React, { useState } from 'react';
-import { formatHHMM, resolveRoutinePrimaryHHMM } from '../core/scheduler';
+import {
+  computeSideloadSignatureStatus,
+  DEFAULT_MAX_INSISTENCE_COUNT,
+  formatHHMM,
+  resolveRoutinePrimaryHHMM,
+} from '../core/scheduler';
 import type {
   GlobalSettings,
   ScheduledPrompt,
@@ -12,26 +17,34 @@ import {
   scheduleTestAlarmInOneMinute,
   scheduleTestNotificationInOneMinute,
 } from '../services/notificationAdapter';
-import { IOSSwitch, TimePickerSheet } from './CustomControls';
+import {
+  IOSSwitch,
+  SegmentedControl,
+  TimePickerSheet,
+} from './CustomControls';
 import { Icon } from './Icon';
 import { getRoutineTheme } from './routineTheme';
 
 interface SettingsScreenProps {
+  now: Date;
   settings: GlobalSettings;
   permissionStatus: string;
   permissionDetails: SystemNotificationPermissions;
   activeScheduledPrompts: ScheduledPrompt[];
   onUpdateSettings: (next: GlobalSettings) => void;
   onRequestPermissions: () => void;
+  onMarkSideloadReinstalled: () => void;
 }
 
 export const SettingsScreen: React.FC<SettingsScreenProps> = ({
+  now,
   settings,
   permissionStatus,
   permissionDetails,
   activeScheduledPrompts,
   onUpdateSettings,
   onRequestPermissions,
+  onMarkSideloadReinstalled,
 }) => {
   const [showSleepPicker, setShowSleepPicker] = useState(false);
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
@@ -57,15 +70,23 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
     permissionStatus.toLowerCase().includes('concedido') ||
     permissionStatus.toLowerCase().includes('granted');
 
+  const sideloadStatus = computeSideloadSignatureStatus(
+    now,
+    settings.lastSideloadReinstallISO
+  );
+  const maxInsistStr = String(
+    settings.maxInsistenceCount ?? DEFAULT_MAX_INSISTENCE_COUNT
+  ) as '3' | '6' | '9' | '12';
+
   return (
     <div className="bevel-today">
       <div className="bevel-screen-title-row">
         <h1 className="bevel-main-title">Ajustes</h1>
       </div>
 
-      {/* Grupo 1: Descanso y hora derivada de Minoxidil */}
+      {/* Grupo 1: Descanso, hora derivada de Minoxidil y ráfaga máxima de insistencias */}
       <div className="bevel-section-header">
-        <h2 className="bevel-day-group-title">Descanso global</h2>
+        <h2 className="bevel-day-group-title">Descanso global y avisos</h2>
       </div>
 
       <section className="ios-grouped-card" aria-label="Ajuste de hora de dormir">
@@ -134,6 +155,53 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
 
           <span className="derived-time-badge">{derivedMinoxidilHHMM}</span>
         </div>
+
+        <div
+          style={{
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '8px',
+            paddingTop: '10px',
+            borderTop: '1px solid var(--border-subtle)',
+          }}
+        >
+          <div
+            style={{
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+            }}
+          >
+            <div>
+              <div className="sheet-field-label">
+                Límite de ráfaga de insistencias
+              </div>
+              <div className="sheet-field-sub">
+                Máximo de recordatorios extra por tarea (por defecto 6)
+              </div>
+            </div>
+            <span className="derived-time-badge">
+              {settings.maxInsistenceCount ?? DEFAULT_MAX_INSISTENCE_COUNT}
+            </span>
+          </div>
+          <SegmentedControl<'3' | '6' | '9' | '12'>
+            options={[
+              { value: '3', label: '3' },
+              { value: '6', label: '6' },
+              { value: '9', label: '9' },
+              { value: '12', label: '12' },
+            ]}
+            value={
+              ['3', '6', '9', '12'].includes(maxInsistStr) ? maxInsistStr : '6'
+            }
+            onChange={(val) =>
+              onUpdateSettings({
+                ...settings,
+                maxInsistenceCount: Number(val),
+              })
+            }
+          />
+        </div>
       </section>
 
       {/* Grupo 2: Permisos del dispositivo */}
@@ -189,7 +257,68 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
         </div>
       </section>
 
-      {/* Grupo 3: Sección Diagnóstico colapsada por defecto */}
+      {/* Grupo 3: Firma de la app (Sideloadly 7 días) */}
+      <div className="bevel-section-header" style={{ marginTop: '4px' }}>
+        <h2 className="bevel-day-group-title">Firma de la app</h2>
+      </div>
+
+      <section className="ios-grouped-card" aria-label="Firma de la app Sideloadly">
+        <div className="ios-grouped-row">
+          <div className="bevel-row-left">
+            <div
+              className="bevel-routine-orb"
+              style={{
+                background: 'linear-gradient(180deg, #fbbf24 0%, #d97706 100%)',
+                boxShadow:
+                  '0 8px 18px rgba(217, 119, 6, 0.35), inset 0 1px 1px rgba(255, 255, 255, 0.38)',
+              }}
+            >
+              <Icon name="ShieldCheck" size={26} weight="fill" color="#ffffff" />
+            </div>
+            <div style={{ minWidth: 0 }}>
+              <div className="bevel-routine-name">Certificado de 7 días</div>
+              <div className="bevel-routine-sub">
+                {sideloadStatus.configured
+                  ? 'Aviso programado el día 6 para reinstalar con Sideloadly'
+                  : 'Pulsa al reinstalar para programar el aviso del día 6'}
+              </div>
+            </div>
+          </div>
+
+          <span
+            className={`history-status-pill ${
+              !sideloadStatus.configured
+                ? 'status-pending'
+                : sideloadStatus.remainingDays !== null &&
+                  sideloadStatus.remainingDays <= 1
+                ? 'status-pending'
+                : 'status-completed'
+            }`}
+          >
+            {!sideloadStatus.configured
+              ? 'Sin registrar'
+              : sideloadStatus.expired
+              ? 'Caducada'
+              : `${sideloadStatus.remainingDays} ${
+                  sideloadStatus.remainingDays === 1 ? 'día' : 'días'
+                }`}
+          </span>
+        </div>
+
+        <div style={{ padding: '4px 0 2px' }}>
+          <button
+            type="button"
+            className="primary-action-btn"
+            style={{ width: '100%' }}
+            onClick={onMarkSideloadReinstalled}
+          >
+            <Icon name="CheckCircle" size={20} weight="fill" />
+            <span>Acabo de reinstalar</span>
+          </button>
+        </div>
+      </section>
+
+      {/* Grupo 4: Sección Diagnóstico colapsada por defecto */}
       <section className="ios-grouped-card" aria-label="Diagnóstico técnico">
         <button
           type="button"
