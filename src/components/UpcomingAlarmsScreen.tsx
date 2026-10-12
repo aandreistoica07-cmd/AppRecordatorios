@@ -13,13 +13,11 @@ import { getRoutineTheme } from './routineTheme';
 interface UpcomingAlarmsScreenProps {
   now: Date;
   upcomingOverview: ScheduledPrompt[];
-  onOpenSettingsTab?: () => void;
 }
 
 export const UpcomingAlarmsScreen: React.FC<UpcomingAlarmsScreenProps> = ({
   now,
   upcomingOverview,
-  onOpenSettingsTab,
 }) => {
   const todayKey = formatDateKey(now);
   const nowMs = now.getTime();
@@ -45,20 +43,6 @@ export const UpcomingAlarmsScreen: React.FC<UpcomingAlarmsScreenProps> = ({
 
   return (
     <div className="bevel-today">
-      <div className="bevel-top-actions">
-        <div className="circle-outline-btn" style={{ cursor: 'default' }}>
-          <Icon name="BellRinging" size={24} weight="bold" />
-        </div>
-        <button
-          type="button"
-          className="circle-outline-btn"
-          title="Ajustes"
-          onClick={() => onOpenSettingsTab?.()}
-        >
-          <Icon name="DotsThree" size={24} weight="bold" />
-        </button>
-      </div>
-
       <div className="bevel-screen-title-row">
         <h1 className="bevel-main-title">Próximas</h1>
       </div>

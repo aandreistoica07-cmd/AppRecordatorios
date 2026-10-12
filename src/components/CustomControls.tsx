@@ -1,6 +1,29 @@
-import React, { useState } from 'react';
+// @section: Custom-Controls-Library
+
+import React, { useEffect, useState } from 'react';
 import { formatHHMM, parseHHMM } from '../core/scheduler';
 import { Icon } from './Icon';
+
+let activeSheetLockCount = 0;
+
+function useLockBodyScroll(open: boolean): void {
+  useEffect(() => {
+    if (!open || typeof document === 'undefined') return;
+    activeSheetLockCount += 1;
+    const html = document.documentElement;
+    const body = document.body;
+    html.classList.add('sheet-scroll-locked');
+    body.classList.add('sheet-scroll-locked');
+
+    return () => {
+      activeSheetLockCount = Math.max(0, activeSheetLockCount - 1);
+      if (activeSheetLockCount === 0) {
+        html.classList.remove('sheet-scroll-locked');
+        body.classList.remove('sheet-scroll-locked');
+      }
+    };
+  }, [open]);
+}
 
 interface SegmentedControlOption<T extends string> {
   value: T;
@@ -49,6 +72,50 @@ export function SegmentedControl<T extends string>({
             onClick={() => onChange(opt.value)}
           >
             {opt.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+interface WrapChoiceChipsProps<T extends string> {
+  options: SegmentedControlOption<T>[];
+  value: T;
+  onChange: (next: T) => void;
+  ariaLabel?: string;
+}
+
+/**
+ * Selector de chips con salto de línea (flex-wrap) y soporte para nombres largos o muchas rutinas,
+ * evitando que las opciones se corten por la derecha dentro de hojas inferiores.
+ */
+export function WrapChoiceChips<T extends string>({
+  options,
+  value,
+  onChange,
+  ariaLabel,
+}: WrapChoiceChipsProps<T>) {
+  return (
+    <div className="wrap-choice-chips" role="radiogroup" aria-label={ariaLabel}>
+      {options.map((opt) => {
+        const active = opt.value === value;
+        return (
+          <button
+            key={opt.value}
+            type="button"
+            role="radio"
+            aria-checked={active}
+            className={`wrap-choice-chip ${active ? 'active' : ''}`}
+            onClick={() => onChange(opt.value)}
+          >
+            <Icon
+              name={active ? 'CheckCircle' : 'Circle'}
+              size={18}
+              weight={active ? 'fill' : 'bold'}
+              color={active ? '#27d3af' : 'var(--text-secondary)'}
+            />
+            <span className="wrap-choice-chip-label">{opt.label}</span>
           </button>
         );
       })}
@@ -106,11 +173,21 @@ export const TimePickerSheet: React.FC<TimePickerSheetProps> = ({
   onConfirm,
   onClose,
 }) => {
+  useLockBodyScroll(open);
+
   const parsed = parseHHMM(initialHHMM);
   const [selectedHour, setSelectedHour] = useState<number>(parsed.hours);
   const [selectedMinute, setSelectedMinute] = useState<number>(
-    Math.round(parsed.minutes / 5) * 5 % 60
+    (Math.round(parsed.minutes / 5) * 5) % 60
   );
+
+  useEffect(() => {
+    if (open) {
+      const p = parseHHMM(initialHHMM);
+      setSelectedHour(p.hours);
+      setSelectedMinute((Math.round(p.minutes / 5) * 5) % 60);
+    }
+  }, [open, initialHHMM]);
 
   if (!open) return null;
 
@@ -127,7 +204,7 @@ export const TimePickerSheet: React.FC<TimePickerSheetProps> = ({
       >
         <div className="sheet-handle" />
         <div className="sheet-header">
-          <div>
+          <div className="sheet-header-text">
             <h3 className="sheet-title">{title}</h3>
             {subtitle && <p className="sheet-subtitle">{subtitle}</p>}
           </div>
@@ -209,6 +286,8 @@ export const BottomSheet: React.FC<BottomSheetProps> = ({
   onClose,
   children,
 }) => {
+  useLockBodyScroll(open);
+
   if (!open) return null;
 
   return (
@@ -222,7 +301,7 @@ export const BottomSheet: React.FC<BottomSheetProps> = ({
       >
         <div className="sheet-handle" />
         <div className="sheet-header">
-          <div>
+          <div className="sheet-header-text">
             <h3 className="sheet-title">{title}</h3>
             {subtitle && <p className="sheet-subtitle">{subtitle}</p>}
           </div>
@@ -235,7 +314,7 @@ export const BottomSheet: React.FC<BottomSheetProps> = ({
             <Icon name="X" size={20} weight="bold" />
           </button>
         </div>
-        {children}
+        <div className="sheet-scroll-body">{children}</div>
       </div>
     </div>
   );

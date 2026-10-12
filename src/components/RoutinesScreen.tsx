@@ -13,6 +13,7 @@ import {
   IOSSwitch,
   SegmentedControl,
   TimePickerSheet,
+  WrapChoiceChips,
 } from './CustomControls';
 import { Icon } from './Icon';
 import { getRoutineTheme } from './routineTheme';
@@ -35,6 +36,7 @@ interface RoutinesScreenProps {
   settings: GlobalSettings;
   onUpdateRoutine: (updated: RoutineConfig) => void;
   onAddRoutine: (newRoutine: RoutineConfig) => void;
+  onDeleteRoutine: (routineId: string) => void;
   onAddBlockingRule: (newRule: BlockingRule) => void;
   onUpdateBlockingRule: (updatedRule: BlockingRule) => void;
   onDeleteBlockingRule: (ruleId: string) => void;
@@ -46,11 +48,13 @@ export const RoutinesScreen: React.FC<RoutinesScreenProps> = ({
   settings,
   onUpdateRoutine,
   onAddRoutine,
+  onDeleteRoutine,
   onAddBlockingRule,
   onUpdateBlockingRule,
   onDeleteBlockingRule,
 }) => {
   const [editingRoutineId, setEditingRoutineId] = useState<string | null>(null);
+  const [confirmDeleteRoutineId, setConfirmDeleteRoutineId] = useState<string | null>(null);
   const [showAddRoutineSheet, setShowAddRoutineSheet] = useState(false);
 
   // Estado para edición o creación de regla de bloqueo en hoja inferior
@@ -158,23 +162,17 @@ export const RoutinesScreen: React.FC<RoutinesScreenProps> = ({
 
   return (
     <div className="bevel-today">
-      {/* Cabecera con botón circular "+" a la derecha para añadir tarea */}
-      <div className="bevel-top-actions">
-        <div className="circle-outline-btn" style={{ cursor: 'default' }}>
-          <Icon name="ListChecks" size={24} weight="bold" />
-        </div>
+      <div className="bevel-screen-title-row">
+        <h1 className="bevel-main-title">Rutinas</h1>
         <button
           type="button"
           className="circle-outline-btn"
           title="Añadir tarea"
+          aria-label="Añadir tarea"
           onClick={() => setShowAddRoutineSheet(true)}
         >
-          <Icon name="Plus" size={24} weight="bold" />
+          <Icon name="Plus" size={22} weight="bold" />
         </button>
-      </div>
-
-      <div className="bevel-screen-title-row">
-        <h1 className="bevel-main-title">Rutinas</h1>
       </div>
 
       {/* Lista de filas-tarjeta de rutinas */}
@@ -319,7 +317,10 @@ export const RoutinesScreen: React.FC<RoutinesScreenProps> = ({
         open={Boolean(editingRoutine)}
         title={editingRoutine?.name ?? 'Editar rutina'}
         subtitle="Configuración de horario, insistencia y modo de aviso"
-        onClose={() => setEditingRoutineId(null)}
+        onClose={() => {
+          setConfirmDeleteRoutineId(null);
+          setEditingRoutineId(null);
+        }}
       >
         {editingRoutine && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '18px' }}>
@@ -501,10 +502,51 @@ export const RoutinesScreen: React.FC<RoutinesScreenProps> = ({
               />
             </div>
 
+            {confirmDeleteRoutineId === editingRoutine.id ? (
+              <div className="confirm-inline-box" role="alertdialog" aria-label="Confirmar eliminación de rutina">
+                <div className="confirm-inline-text">
+                  ¿Eliminar «{editingRoutine.name}»? Se cancelarán todas sus alarmas y se borrarán las reglas de bloqueo que la referencian. Su historial pasado se conservará con su nombre.
+                </div>
+                <div className="confirm-inline-actions">
+                  <button
+                    type="button"
+                    className="bevel-row-action-pill"
+                    onClick={() => setConfirmDeleteRoutineId(null)}
+                  >
+                    <span>Cancelar</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="danger-action-btn"
+                    onClick={() => {
+                      onDeleteRoutine(editingRoutine.id);
+                      setConfirmDeleteRoutineId(null);
+                      setEditingRoutineId(null);
+                    }}
+                  >
+                    <Icon name="Trash" size={18} weight="bold" color="#fca5a5" />
+                    <span>Sí, eliminar rutina</span>
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <button
+                type="button"
+                className="danger-action-btn"
+                onClick={() => setConfirmDeleteRoutineId(editingRoutine.id)}
+              >
+                <Icon name="Trash" size={18} weight="bold" color="#fca5a5" />
+                <span>Eliminar rutina</span>
+              </button>
+            )}
+
             <button
               type="button"
               className="primary-action-btn"
-              onClick={() => setEditingRoutineId(null)}
+              onClick={() => {
+                setConfirmDeleteRoutineId(null);
+                setEditingRoutineId(null);
+              }}
             >
               <Icon name="Check" size={20} weight="bold" />
               <span>Listo</span>
@@ -638,7 +680,8 @@ export const RoutinesScreen: React.FC<RoutinesScreenProps> = ({
           <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
               <div className="sheet-field-label">Al completar la tarea</div>
-              <SegmentedControl<string>
+              <WrapChoiceChips<string>
+                ariaLabel="Seleccionar tarea que activa el bloqueo"
                 options={routines.map((r) => ({
                   value: r.id,
                   label: r.name,
@@ -652,7 +695,8 @@ export const RoutinesScreen: React.FC<RoutinesScreenProps> = ({
 
             <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
               <div className="sheet-field-label">Bloquear tarea</div>
-              <SegmentedControl<string>
+              <WrapChoiceChips<string>
+                ariaLabel="Seleccionar tarea a bloquear"
                 options={routines.map((r) => ({
                   value: r.id,
                   label: r.name,

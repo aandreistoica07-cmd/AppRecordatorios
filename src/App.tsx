@@ -15,11 +15,13 @@ import {
 import {
   computeCurrentStreakDays,
   computeSchedule,
+  deleteRoutineAndCleanup,
   evaluateDaySummary,
   formatDateKey,
   markRoutineDone,
   postponeRoutineNotAtHome,
   toggleChecklistStep,
+  unmarkRoutineDone,
 } from './core/scheduler';
 import type {
   ActiveNoticeMode,
@@ -27,6 +29,7 @@ import type {
   GlobalSettings,
   RoutineConfig,
   RoutineDayRecord,
+  SystemNotificationPermissions,
 } from './core/types';
 import {
   configureNativeStatusBar,
@@ -34,8 +37,11 @@ import {
   triggerSuccessHaptic,
 } from './services/deviceBridge';
 import {
+  cancelRoutineNotificationsById,
+  getDetailedNotificationPermissions,
   registerNotificationCategories,
   requestNotificationPermissions,
+  setupNotificationListeners,
   syncSystemNotifications,
 } from './services/notificationAdapter';
 import { loadAppState, saveAppState } from './services/storage';
@@ -73,9 +79,32 @@ export const App: React.FC = () => {
     type: 'alarm',
   });
   const [permissionStatus, setPermissionStatus] = useState<string>('Pendiente');
+  const [permissionDetails, setPermissionDetails] =
+    useState<SystemNotificationPermissions>({
+      display: 'prompt',
+      enabledInNotificationCenter: false,
+      alerts: 'Pendiente',
+      sound: 'Pendiente',
+      badges: 'Pendiente',
+    });
   const [toastMessage, setToastMessage] = useState<string | null>(null);
-  const [externalModeSheetOpen, setExternalModeSheetOpen] =
-    useState<boolean>(false);
+
+  const showToast = (msg: string) => {
+    setToastMessage(msg);
+    setTimeout(() => setToastMessage(null), 3200);
+  };
+
+  const refreshPermissionState = async () => {
+    const details = await getDetailedNotificationPermissions();
+    setPermissionDetails(details);
+    setPermissionStatus(
+      details.display === 'granted'
+        ? 'Concedido'
+        : details.display === 'denied'
+        ? 'Denegado'
+        : 'Pendiente'
+    );
+  };
 
   // Cargar datos de @capacitor/preferences y configurar StatusBar al abrir la app
   useEffect(() => {
@@ -83,19 +112,61 @@ export const App: React.FC = () => {
     (async () => {
       await configureNativeStatusBar();
       await registerNotificationCategories();
-      const loaded = await loadAppState();
+      const [loaded, permDetails] = await Promise.all([
+        loadAppState(),
+        getDetailedNotificationPermissions(),
+      ]);
       if (!mounted) return;
       setSettings(loaded.settings);
       setRoutines(loaded.routines);
       setBlockingRules(loaded.blockingRules);
       setRecords(loaded.records);
       setNoticeMode(loaded.noticeMode);
+      setPermissionDetails(permDetails);
+      setPermissionStatus(
+        permDetails.display === 'granted'
+          ? 'Concedido'
+          : permDetails.display === 'denied'
+          ? 'Denegado'
+          : 'Pendiente'
+      );
       setHydrated(true);
     })();
+
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        void refreshPermissionState();
+      }
+    };
+    document.addEventListener('visibilitychange', onVisibilityChange);
+
     return () => {
       mounted = false;
+      document.removeEventListener('visibilitychange', onVisibilityChange);
     };
   }, []);
+
+  // Escuchar notificaciones recibidas en primer plano y botones de acción rápida
+  useEffect(() => {
+    const cleanupPromise = setupNotificationListeners({
+      onForegroundReceived: ({ title, body }) => {
+        showToast(`🔔 ${title}: ${body}`);
+      },
+      onActionPerformed: ({ actionId, routineId, dateKey }) => {
+        if (!routineId || !dateKey) return;
+        const targetRoutine = routines.find((r) => r.id === routineId);
+        if (!targetRoutine) return;
+        if (actionId === 'DONE') {
+          handleMarkDone(targetRoutine, dateKey);
+        } else if (actionId === 'NOT_AT_HOME') {
+          handlePostponeNotAtHome(targetRoutine, dateKey);
+        }
+      },
+    });
+    return () => {
+      void cleanupPromise.then((cleanup) => cleanup());
+    };
+  }, [routines, records]);
 
   // Reloj en vivo cada segundo para la cuenta atrás del modo discreto / pausa
   useEffect(() => {
@@ -119,28 +190,48 @@ export const App: React.FC = () => {
   useEffect(() => {
     if (!hydrated) return;
 
-    // Persistir automáticamente registros 'omitted_by_block' generados dentro de las 24h del dermastamp
-    let updatedRecords = records;
-    if (scheduleResult.autoOmittedRecords.length > 0) {
-      let changed = false;
-      const copy = [...records];
-      for (const autoRec of scheduleResult.autoOmittedRecords) {
-        const idx = copy.findIndex(
-          (r) =>
-            r.routineId === autoRec.routineId && r.dateKey === autoRec.dateKey
+    const todayKey = formatDateKey(now);
+    const activeAutoOmittedSet = new Set(
+      scheduleResult.autoOmittedRecords.map(
+        (r) => `${r.routineId}__${r.dateKey}`
+      )
+    );
+
+    // Sincronizar registros 'omitted_by_block': añadir nuevos y limpiar los de hoy/futuro que ya no estén bloqueados
+    let changed = false;
+    const copy = records.filter((rec) => {
+      if (rec.status === 'omitted_by_block' && rec.dateKey >= todayKey) {
+        const stillBlocked = activeAutoOmittedSet.has(
+          `${rec.routineId}__${rec.dateKey}`
         );
-        if (idx === -1) {
-          copy.push(autoRec);
+        if (!stillBlocked) {
           changed = true;
-        } else if (copy[idx].status !== 'omitted_by_block' && copy[idx].status !== 'completed') {
-          copy[idx] = autoRec;
-          changed = true;
+          return false;
         }
       }
-      if (changed) {
-        updatedRecords = copy;
-        setRecords(copy);
+      return true;
+    });
+
+    for (const autoRec of scheduleResult.autoOmittedRecords) {
+      const idx = copy.findIndex(
+        (r) =>
+          r.routineId === autoRec.routineId && r.dateKey === autoRec.dateKey
+      );
+      if (idx === -1) {
+        copy.push(autoRec);
+        changed = true;
+      } else if (
+        copy[idx].status !== 'omitted_by_block' &&
+        copy[idx].status !== 'completed'
+      ) {
+        copy[idx] = autoRec;
+        changed = true;
       }
+    }
+
+    const updatedRecords = changed ? copy : records;
+    if (changed) {
+      setRecords(copy);
     }
 
     // Si el modo discreto o pausa ha caducado, persistir la vuelta al modo alarma
@@ -173,11 +264,6 @@ export const App: React.FC = () => {
     scheduleResult.activePromptsToSchedule.length,
     scheduleResult.effectiveMode.type,
   ]);
-
-  const showToast = (msg: string) => {
-    setToastMessage(msg);
-    setTimeout(() => setToastMessage(null), 3200);
-  };
 
   const upsertRecordAndCheckCompletion = (
     nextRecord: RoutineDayRecord,
@@ -225,6 +311,61 @@ export const App: React.FC = () => {
     }
     upsertRecordAndCheckCompletion(res.record, dateKey);
     showToast(`✓ ${routine.name} marcado como Hecho. Alarmas del día canceladas.`);
+  };
+
+  const handleUndoDone = (routine: RoutineConfig, dateKey: string) => {
+    const hadBlockedDependents = records.some(
+      (r) =>
+        r.status === 'omitted_by_block' && r.blockedByRoutineId === routine.id
+    );
+    const nextRecords = unmarkRoutineDone(
+      routine.id,
+      dateKey,
+      records,
+      routines,
+      blockingRules,
+      settings
+    );
+    const stillHasBlockedDependents = nextRecords.some(
+      (r) =>
+        r.status === 'omitted_by_block' && r.blockedByRoutineId === routine.id
+    );
+
+    void triggerLightHaptic();
+    setRecords(nextRecords);
+
+    if (hadBlockedDependents && !stillHasBlockedDependents) {
+      showToast(
+        `↩ ${routine.name} vuelve a pendiente. Bloqueo de 24h anulado y alarmas reprogramadas.`
+      );
+    } else if (routine.secondarySchedule) {
+      showToast(
+        `↩ ${routine.name} vuelve a pendiente. Aviso de tarde (${routine.secondarySchedule.timeHHMM}) reprogramado.`
+      );
+    } else {
+      showToast(`↩ ${routine.name} vuelve a pendiente. Alarmas reprogramadas.`);
+    }
+  };
+
+  const handleDeleteRoutine = (routineId: string) => {
+    const targetName =
+      routines.find((r) => r.id === routineId)?.name ?? routineId;
+    const res = deleteRoutineAndCleanup({
+      routineId,
+      todayKey: formatDateKey(now),
+      routines,
+      blockingRules,
+      records,
+      activePrompts: scheduleResult.activePromptsToSchedule,
+    });
+    void triggerLightHaptic();
+    void cancelRoutineNotificationsById(routineId, res.cancelledNumericIds);
+    setRoutines(res.routines);
+    setBlockingRules(res.blockingRules);
+    setRecords(res.records);
+    showToast(
+      `Rutina "${targetName}" eliminada. Alarmas canceladas e historial conservado.`
+    );
   };
 
   const handleToggleChecklistStep = (
@@ -350,10 +491,8 @@ export const App: React.FC = () => {
           settings={settings}
           effectiveMode={scheduleResult.effectiveMode}
           streakDays={streakDays}
-          externalModeSheetOpen={externalModeSheetOpen}
-          onCloseExternalModeSheet={() => setExternalModeSheetOpen(false)}
-          onOpenSettingsTab={() => setActiveTab('settings')}
           onMarkDone={handleMarkDone}
+          onUndoDone={handleUndoDone}
           onToggleChecklistStep={handleToggleChecklistStep}
           onPostponeNotAtHome={handlePostponeNotAtHome}
           onActivateDiscreet={(untilDate) => {
@@ -415,6 +554,7 @@ export const App: React.FC = () => {
             setRoutines((prev) => [...prev, newR]);
             showToast(`Rutina "${newR.name}" añadida.`);
           }}
+          onDeleteRoutine={handleDeleteRoutine}
           onAddBlockingRule={(newRule) => {
             setBlockingRules((prev) => [...prev, newRule]);
             showToast('Regla de bloqueo añadida.');
@@ -436,7 +576,6 @@ export const App: React.FC = () => {
         <UpcomingAlarmsScreen
           now={now}
           upcomingOverview={scheduleResult.upcomingSevenDaysOverview}
-          onOpenSettingsTab={() => setActiveTab('settings')}
         />
       )}
 
@@ -447,7 +586,6 @@ export const App: React.FC = () => {
           records={records}
           blockingRules={blockingRules}
           settings={settings}
-          onOpenSettingsTab={() => setActiveTab('settings')}
         />
       )}
 
@@ -455,13 +593,13 @@ export const App: React.FC = () => {
         <SettingsScreen
           settings={settings}
           permissionStatus={permissionStatus}
+          permissionDetails={permissionDetails}
           activeScheduledPrompts={scheduleResult.activePromptsToSchedule}
           onUpdateSettings={handleUpdateGlobalSettings}
           onRequestPermissions={async () => {
             const res = await requestNotificationPermissions();
-            setPermissionStatus(
-              res.granted ? 'Concedido' : `Denegado`
-            );
+            setPermissionDetails(res.details);
+            setPermissionStatus(res.status);
           }}
         />
       )}

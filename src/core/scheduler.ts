@@ -133,10 +133,12 @@ export function toggleChecklistStep(
   const baseRecord: RoutineDayRecord = existingRecord
     ? {
         ...existingRecord,
+        routineName: routine.name,
         completedChecklistSteps: [...(existingRecord.completedChecklistSteps ?? [])],
       }
     : {
         routineId: routine.id,
+        routineName: routine.name,
         dateKey,
         status: 'pending',
         completedChecklistSteps: [],
@@ -202,6 +204,7 @@ export function markRoutineDone(
         record:
           existingRecord ?? {
             routineId: routine.id,
+            routineName: routine.name,
             dateKey,
             status: 'pending',
             completedChecklistSteps: [],
@@ -215,6 +218,7 @@ export function markRoutineDone(
     record: {
       ...(existingRecord ?? {}),
       routineId: routine.id,
+      routineName: routine.name,
       dateKey,
       status: 'completed',
       completedAtISO: now.toISOString(),
@@ -222,6 +226,160 @@ export function markRoutineDone(
         ? routine.checklistSteps.map((s) => s.id)
         : existingRecord?.completedChecklistSteps,
     },
+  };
+}
+
+/**
+ * Deshace una tarea completada en `dateKey`:
+ * - La tarea vuelve a `'pending'`, limpiando `completedAtISO` y pasos del checklist.
+ * - Si la tarea tenía reglas de bloqueo activas (ej. Dermastamp -> Minoxidil 24 h),
+ *   recalcula el bloqueo y restaura a `'pending'` cualquier tarea que se hubiera omitido
+ *   dentro de la ventana de 24 h y que ya no esté bloqueada.
+ */
+export function unmarkRoutineDone(
+  routineId: string,
+  dateKey: string,
+  records: RoutineDayRecord[],
+  routines: RoutineConfig[],
+  blockingRules: BlockingRule[],
+  settings: GlobalSettings
+): RoutineDayRecord[] {
+  const routine = routines.find((r) => r.id === routineId);
+
+  // 1. Revertir el registro objetivo a 'pending' (conservando posposiciones previas si las hubiera)
+  const stepOneRecords: RoutineDayRecord[] = [];
+  for (const rec of records) {
+    if (rec.routineId === routineId && rec.dateKey === dateKey) {
+      const reverted: RoutineDayRecord = {
+        routineId: rec.routineId,
+        routineName: rec.routineName ?? routine?.name,
+        dateKey: rec.dateKey,
+        status: 'pending',
+      };
+      if (rec.notAtHomePostponeCount !== undefined) {
+        reverted.notAtHomePostponeCount = rec.notAtHomePostponeCount;
+      }
+      if (rec.postponedAfternoonTimeHHMM !== undefined) {
+        reverted.postponedAfternoonTimeHHMM = rec.postponedAfternoonTimeHHMM;
+      }
+      if (routine?.checklistSteps && routine.checklistSteps.length > 0) {
+        reverted.completedChecklistSteps = [];
+      }
+      stepOneRecords.push(reverted);
+    } else {
+      stepOneRecords.push({ ...rec });
+    }
+  }
+
+  // 2. Recalcular bloqueos: cualquier registro 'omitted_by_block' que dependiera de esta rutina
+  //    y ya no caiga dentro de una ventana de 24h activa vuelve a estar 'pending' (se elimina el estado omitido).
+  const finalRecords: RoutineDayRecord[] = [];
+  for (const rec of stepOneRecords) {
+    if (rec.status === 'omitted_by_block') {
+      const targetRoutine = routines.find((r) => r.id === rec.routineId);
+      if (targetRoutine) {
+        const primaryDate = resolveRoutinePrimaryDate(
+          targetRoutine,
+          rec.dateKey,
+          settings
+        );
+        const blockCheck = findActiveBlockForTimestamp(
+          targetRoutine.id,
+          primaryDate,
+          blockingRules,
+          stepOneRecords
+        );
+        if (!blockCheck.blocked) {
+          // Vuelve a estar pendiente
+          continue;
+        }
+      } else if (rec.blockedByRoutineId === routineId) {
+        continue;
+      }
+    }
+    finalRecords.push(rec);
+  }
+
+  return finalRecords;
+}
+
+/**
+ * Elimina una rutina por ID:
+ * - Devuelve la lista de rutinas sin ella.
+ * - Borra todas las reglas de bloqueo que la referencian (como origen o destino).
+ * - Conserva su historial pasado en `records` guardando `routineName` para que Historial muestre su nombre.
+ * - Restaura a pendiente cualquier bloqueo futuro/actual que dependiera de la rutina eliminada.
+ * - Devuelve los IDs numéricos de notificaciones asociadas para su cancelación explícita.
+ */
+export function deleteRoutineAndCleanup(params: {
+  routineId: string;
+  todayKey: string;
+  routines: RoutineConfig[];
+  blockingRules: BlockingRule[];
+  records: RoutineDayRecord[];
+  activePrompts?: ScheduledPrompt[];
+}): {
+  routines: RoutineConfig[];
+  blockingRules: BlockingRule[];
+  records: RoutineDayRecord[];
+  cancelledNumericIds: number[];
+} {
+  const {
+    routineId,
+    todayKey,
+    routines,
+    blockingRules,
+    records,
+    activePrompts = [],
+  } = params;
+
+  const targetRoutine = routines.find((r) => r.id === routineId);
+  const savedName = targetRoutine?.name ?? routineId;
+
+  const nextRoutines = routines.filter((r) => r.id !== routineId);
+  const nextBlockingRules = blockingRules.filter(
+    (rule) =>
+      rule.sourceRoutineId !== routineId && rule.targetRoutineId !== routineId
+  );
+
+  const nextRecords: RoutineDayRecord[] = [];
+  for (const rec of records) {
+    if (rec.routineId === routineId) {
+      // Conservar historial pasado o registros completados/omitidos/saltados con el nombre guardado
+      if (rec.status !== 'pending') {
+        nextRecords.push({
+          ...rec,
+          routineName: rec.routineName ?? savedName,
+        });
+      }
+      continue;
+    }
+
+    // Si otra rutina estaba omitida hoy o en el futuro por la rutina eliminada, vuelve a pendiente
+    if (
+      rec.status === 'omitted_by_block' &&
+      rec.blockedByRoutineId === routineId &&
+      rec.dateKey >= todayKey
+    ) {
+      continue;
+    }
+
+    nextRecords.push(rec);
+  }
+
+  const cancelledNumericIds = activePrompts
+    .filter(
+      (p) =>
+        p.routineId === routineId ||
+        p.routineId.split(',').includes(routineId)
+    )
+    .map((p) => p.notificationNumericId);
+
+  return {
+    routines: nextRoutines,
+    blockingRules: nextBlockingRules,
+    records: nextRecords,
+    cancelledNumericIds,
   };
 }
 
@@ -264,6 +422,7 @@ export function postponeRoutineNotAtHome(
       dateKey,
       status: 'pending',
     }),
+    routineName: routine.name,
     notAtHomePostponeCount: (existingRecord?.notAtHomePostponeCount ?? 0) + 1,
     postponedAfternoonTimeHHMM: nextTimeHHMM,
   };
@@ -812,6 +971,7 @@ export function evaluateDaySummary(
 ): DaySummary {
   const applicable = routines.filter((r) => doesRoutineApplyOnDate(r, dateKey));
   const routineStatuses: DaySummary['routineStatuses'] = [];
+  const activeRoutineIds = new Set(routines.map((r) => r.id));
 
   for (const routine of applicable) {
     const existing = records.find(
@@ -823,16 +983,6 @@ export function evaluateDaySummary(
         routineId: routine.id,
         routineName: routine.name,
         status: 'completed',
-      });
-      continue;
-    }
-
-    if (existing?.status === 'omitted_by_block') {
-      routineStatuses.push({
-        routineId: routine.id,
-        routineName: routine.name,
-        status: 'omitted_by_block',
-        reason: existing.blockReason,
       });
       continue;
     }
@@ -855,6 +1005,20 @@ export function evaluateDaySummary(
       continue;
     }
 
+    if (
+      existing?.status === 'omitted_by_block' &&
+      (!existing.blockedByRoutineId ||
+        !activeRoutineIds.has(existing.blockedByRoutineId))
+    ) {
+      routineStatuses.push({
+        routineId: routine.id,
+        routineName: routine.name,
+        status: 'omitted_by_block',
+        reason: existing.blockReason,
+      });
+      continue;
+    }
+
     if (existing?.status === 'skipped' || dateKey < todayKey) {
       routineStatuses.push({
         routineId: routine.id,
@@ -866,6 +1030,24 @@ export function evaluateDaySummary(
         routineId: routine.id,
         routineName: routine.name,
         status: 'pending',
+      });
+    }
+  }
+
+  // Conservar el historial pasado de rutinas eliminadas mostrando su nombre guardado
+  for (const rec of records) {
+    if (rec.dateKey !== dateKey) continue;
+    if (activeRoutineIds.has(rec.routineId)) continue;
+    if (
+      rec.status === 'completed' ||
+      rec.status === 'omitted_by_block' ||
+      rec.status === 'skipped'
+    ) {
+      routineStatuses.push({
+        routineId: rec.routineId,
+        routineName: rec.routineName ?? rec.routineId,
+        status: rec.status,
+        reason: rec.blockReason,
       });
     }
   }
@@ -933,7 +1115,9 @@ export function computeCurrentStreakDays(
   for (let i = 1; i <= 365; i++) {
     const pastKey = addDaysToDateKey(todayKey, -i);
     // Comprobar si hay algún registro en o antes de esa fecha para no contar días previos al uso de la app
-    const hasAnyRecordOnOrBefore = records.some((r) => r.dateKey <= pastKey);
+    const hasAnyRecordOnOrBefore = records.some(
+      (r) => r.dateKey <= pastKey && r.status !== 'pending'
+    );
     if (!hasAnyRecordOnOrBefore) {
       break;
     }
@@ -993,6 +1177,7 @@ export function computeDueProgressForDay(
   const applicable = routines.filter((r) =>
     doesRoutineApplyOnDate(r, todayKey)
   );
+  const activeRoutineIds = new Set(routines.map((r) => r.id));
 
   let completedDueCount = 0;
   let totalDueCount = 0;
@@ -1018,8 +1203,15 @@ export function computeDueProgressForDay(
       blockingRules,
       records
     );
+    const isStaleBlockFromActiveRoutine =
+      existing?.status === 'omitted_by_block' &&
+      existing.blockedByRoutineId &&
+      activeRoutineIds.has(existing.blockedByRoutineId) &&
+      !blockCheck.blocked;
+
     if (
-      existing?.status === 'omitted_by_block' ||
+      (existing?.status === 'omitted_by_block' &&
+        !isStaleBlockFromActiveRoutine) ||
       (blockCheck.blocked && blockCheck.rule)
     ) {
       omittedCount++;
@@ -1073,6 +1265,7 @@ export function computeWeeklyCompliancePercentage(
       : todayKeyOrNow;
   const todayKey = formatDateKey(nowDate);
   const nowMs = nowDate.getTime();
+  const activeRoutineIds = new Set(routines.map((r) => r.id));
 
   let completedCount = 0;
   let evaluableCount = 0;
@@ -1084,7 +1277,9 @@ export function computeWeeklyCompliancePercentage(
     // Para días anteriores a hoy (i > 0), solo evaluar si ya existía actividad en o antes de esa fecha
     // (evita contar como fallos los días previos a que el usuario empezara a usar la app).
     if (i > 0) {
-      const hasHistoryOnOrBefore = records.some((r) => r.dateKey <= key);
+      const hasHistoryOnOrBefore = records.some(
+        (r) => r.dateKey <= key && r.status !== 'pending'
+      );
       if (!hasHistoryOnOrBefore) {
         continue;
       }
@@ -1110,8 +1305,15 @@ export function computeWeeklyCompliancePercentage(
         blockingRules,
         records
       );
+      const isStaleBlockFromActiveRoutine =
+        existing?.status === 'omitted_by_block' &&
+        existing.blockedByRoutineId &&
+        activeRoutineIds.has(existing.blockedByRoutineId) &&
+        !blockCheck.blocked;
+
       if (
-        existing?.status === 'omitted_by_block' ||
+        (existing?.status === 'omitted_by_block' &&
+          !isStaleBlockFromActiveRoutine) ||
         (blockCheck.blocked && blockCheck.rule)
       ) {
         omittedCount++;

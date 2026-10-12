@@ -22,7 +22,7 @@ import type {
   RoutineConfig,
   RoutineDayRecord,
 } from '../core/types';
-import { SegmentedControl, TimePickerSheet } from './CustomControls';
+import { BottomSheet, SegmentedControl, TimePickerSheet } from './CustomControls';
 import { Icon } from './Icon';
 import { getRoutineVisualMeta } from './routineTheme';
 
@@ -34,9 +34,8 @@ interface TodayScreenProps {
   settings: GlobalSettings;
   effectiveMode: ActiveNoticeMode;
   streakDays: number;
-  externalModeSheetOpen?: boolean;
-  onCloseExternalModeSheet?: () => void;
   onMarkDone: (routine: RoutineConfig, dateKey: string) => void;
+  onUndoDone: (routine: RoutineConfig, dateKey: string) => void;
   onToggleChecklistStep: (
     routine: RoutineConfig,
     dateKey: string,
@@ -46,7 +45,6 @@ interface TodayScreenProps {
   onActivateDiscreet: (untilDate: Date) => void;
   onActivatePause: (untilDate: Date, targetHHMM: string) => void;
   onResetNoticeMode: () => void;
-  onOpenSettingsTab?: () => void;
 }
 
 type ModeSelection = 'alarm' | 'discreet' | 'paused';
@@ -62,15 +60,13 @@ export const TodayScreen: React.FC<TodayScreenProps> = ({
   settings,
   effectiveMode,
   streakDays,
-  externalModeSheetOpen = false,
-  onCloseExternalModeSheet,
   onMarkDone,
+  onUndoDone,
   onToggleChecklistStep,
   onPostponeNotAtHome,
   onActivateDiscreet,
   onActivatePause,
   onResetNoticeMode,
-  onOpenSettingsTab,
 }) => {
   const todayKey = formatDateKey(now);
   const [selectedDateKey, setSelectedDateKey] = useState<string>(todayKey);
@@ -80,6 +76,10 @@ export const TodayScreen: React.FC<TodayScreenProps> = ({
     null
   );
   const [mountedAnim, setMountedAnim] = useState(false);
+  const [confirmUndoTarget, setConfirmUndoTarget] = useState<{
+    routine: RoutineConfig;
+    dateKey: string;
+  } | null>(null);
 
   const [timeSheetConfig, setTimeSheetConfig] = useState<{
     open: boolean;
@@ -95,13 +95,6 @@ export const TodayScreen: React.FC<TodayScreenProps> = ({
     const t = requestAnimationFrame(() => setMountedAnim(true));
     return () => cancelAnimationFrame(t);
   }, []);
-
-  useEffect(() => {
-    if (externalModeSheetOpen) {
-      setShowModeCardDrawer(true);
-      onCloseExternalModeSheet?.();
-    }
-  }, [externalModeSheetOpen, onCloseExternalModeSheet]);
 
   const sevenDayStripKeys = [-3, -2, -1, 0, 1, 2, 3].map((offset) =>
     addDaysToDateKey(todayKey, offset)
@@ -253,40 +246,34 @@ export const TodayScreen: React.FC<TodayScreenProps> = ({
 
   return (
     <div className="bevel-today">
-      {/* Botones circulares del encabezado: CalendarDots y DotsThree weight="bold", 24px */}
-      <div className="bevel-top-actions">
+      {/* Título de pantalla 34px/700 desplegable para selector de 7 días */}
+      <div className="bevel-screen-title-row">
         <button
           type="button"
-          className="circle-outline-btn"
-          title="Selector de día"
+          className="bevel-screen-title-btn"
           onClick={() => setShowDayStrip((v) => !v)}
+          aria-expanded={showDayStrip}
+          title="Alternar selector de días de la semana"
         >
-          <Icon name="CalendarDots" size={24} weight="bold" />
+          <h1 className="bevel-main-title">{headerTitle}</h1>
+          <Icon
+            name="CaretDown"
+            size={20}
+            weight="bold"
+            color="var(--text-secondary)"
+          />
         </button>
 
-        <button
-          type="button"
-          className="circle-outline-btn"
-          title="Ajustes y diagnóstico"
-          onClick={() => onOpenSettingsTab?.()}
-        >
-          <Icon name="DotsThree" size={24} weight="bold" />
-        </button>
-      </div>
-
-      {/* Título de pantalla 34px/700 */}
-      <div
-        className="bevel-screen-title-row"
-        onClick={() => setShowDayStrip((v) => !v)}
-        style={{ cursor: 'pointer' }}
-      >
-        <h1 className="bevel-main-title">{headerTitle}</h1>
-        <Icon
-          name="CaretDown"
-          size={20}
-          weight="bold"
-          color="var(--text-secondary)"
-        />
+        {selectedDateKey !== todayKey && (
+          <button
+            type="button"
+            className="time-trigger-pill"
+            style={{ minHeight: '36px', padding: '0 14px', fontSize: '14px' }}
+            onClick={() => setSelectedDateKey(todayKey)}
+          >
+            <span>Volver a hoy</span>
+          </button>
+        )}
       </div>
 
       {/* Chips de estado: icono relleno de 22px dentro de círculo con degradado (SpeakerHigh, BellSlash, Pause, Flame) */}
@@ -342,7 +329,7 @@ export const TodayScreen: React.FC<TodayScreenProps> = ({
           />
         </button>
 
-        <div className="bevel-status-chip" style={{ cursor: 'default' }}>
+        <div className="bevel-status-chip is-static">
           <div className="chip-left-group">
             <div className="chip-gradient-orb amber-orb">
               <Icon name="Flame" size={22} weight="fill" color="#ffffff" />
@@ -787,9 +774,15 @@ export const TodayScreen: React.FC<TodayScreenProps> = ({
             );
 
             const isCompleted = rec?.status === 'completed';
+            const isStaleBlock =
+              rec?.status === 'omitted_by_block' &&
+              rec.blockedByRoutineId &&
+              routines.some((rt) => rt.id === rec.blockedByRoutineId) &&
+              !blockCheck.blocked;
             const isOmitted =
               !isCompleted &&
-              (rec?.status === 'omitted_by_block' || blockCheck.blocked);
+              ((rec?.status === 'omitted_by_block' && !isStaleBlock) ||
+                blockCheck.blocked);
             const isDue = primaryDate.getTime() <= now.getTime();
 
             const completedSteps = rec?.completedChecklistSteps ?? [];
@@ -810,9 +803,33 @@ export const TodayScreen: React.FC<TodayScreenProps> = ({
             return (
               <article
                 key={routine.id}
+                role={isCompleted ? 'button' : undefined}
+                tabIndex={isCompleted ? 0 : undefined}
+                onClick={
+                  isCompleted
+                    ? () =>
+                        setConfirmUndoTarget({
+                          routine,
+                          dateKey: selectedDateKey,
+                        })
+                    : undefined
+                }
+                onKeyDown={
+                  isCompleted
+                    ? (e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.preventDefault();
+                          setConfirmUndoTarget({
+                            routine,
+                            dateKey: selectedDateKey,
+                          });
+                        }
+                      }
+                    : undefined
+                }
                 className={`bevel-routine-row-card ${
                   isCompleted || isOmitted ? 'is-resolved' : ''
-                }`}
+                } ${isCompleted ? 'interactive-row' : ''}`}
               >
                 <div className="bevel-row-top">
                   <div className="bevel-row-left">
@@ -844,7 +861,7 @@ export const TodayScreen: React.FC<TodayScreenProps> = ({
                           {primaryHHMM}
                         </strong>
                         {' · '}
-                        {isCompleted && 'Completada'}
+                        {isCompleted && 'Completada · Toca para deshacer'}
                         {isOmitted &&
                           (blockCheck.rule?.statusLabel ??
                             rec?.blockReason ??
@@ -861,7 +878,7 @@ export const TodayScreen: React.FC<TodayScreenProps> = ({
                     </div>
                   </div>
 
-                  {/* Botón "Hecho" con Check weight="bold" */}
+                  {/* Botón "Hecho" con Check weight="bold" o botón de deshacer si está completada */}
                   {!isCompleted && !isOmitted ? (
                     <button
                       type="button"
@@ -877,29 +894,35 @@ export const TodayScreen: React.FC<TodayScreenProps> = ({
                       />
                       <span>Hecho</span>
                     </button>
+                  ) : isCompleted ? (
+                    <button
+                      type="button"
+                      className="bevel-row-action-pill"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setConfirmUndoTarget({
+                          routine,
+                          dateKey: selectedDateKey,
+                        });
+                      }}
+                    >
+                      <Icon
+                        name="Check"
+                        size={18}
+                        weight="bold"
+                        color={visual.colorVar}
+                      />
+                      <span>Hecho</span>
+                    </button>
                   ) : (
                     <div className="bevel-row-action-pill">
-                      {isCompleted ? (
-                        <>
-                          <Icon
-                            name="Check"
-                            size={18}
-                            weight="bold"
-                            color={visual.colorVar}
-                          />
-                          <span>Hecho</span>
-                        </>
-                      ) : (
-                        <>
-                          <Icon
-                            name="ShieldCheck"
-                            size={18}
-                            weight="bold"
-                            color={visual.colorVar}
-                          />
-                          <span>Omitido</span>
-                        </>
-                      )}
+                      <Icon
+                        name="ShieldCheck"
+                        size={18}
+                        weight="bold"
+                        color={visual.colorVar}
+                      />
+                      <span>Omitido</span>
                     </div>
                   )}
                 </div>
@@ -1000,6 +1023,60 @@ export const TodayScreen: React.FC<TodayScreenProps> = ({
           })}
         </div>
       )}
+
+      {/* Hoja de confirmación para desmarcar tarea completada */}
+      <BottomSheet
+        open={Boolean(confirmUndoTarget)}
+        title={
+          confirmUndoTarget
+            ? `¿Desmarcar ${confirmUndoTarget.routine.name}?`
+            : '¿Desmarcar tarea?'
+        }
+        subtitle={
+          confirmUndoTarget &&
+          blockingRules.some(
+            (r) => r.sourceRoutineId === confirmUndoTarget.routine.id
+          )
+            ? 'La tarea volverá a estar pendiente, se reprogramarán sus alarmas, se anulará el bloqueo de 24 h (los Minoxidil omitidos volverán a estar pendientes) y se recalcularán racha y porcentajes.'
+            : confirmUndoTarget?.routine.secondarySchedule
+            ? 'La tarea volverá a estar pendiente, se reprogramarán sus alarmas (incluyendo el aviso de la tarde) y se recalcularán racha y porcentajes.'
+            : 'La tarea volverá a estar pendiente, se reprogramarán sus alarmas e insistencias y se recalcularán racha y porcentajes.'
+        }
+        onClose={() => setConfirmUndoTarget(null)}
+      >
+        {confirmUndoTarget && (
+          <div style={{ display: 'flex', gap: '10px', marginTop: '4px' }}>
+            <button
+              type="button"
+              className="bevel-row-action-pill"
+              style={{ flex: 1 }}
+              onClick={() => setConfirmUndoTarget(null)}
+            >
+              <span>Cancelar</span>
+            </button>
+            <button
+              type="button"
+              className="danger-action-btn"
+              style={{ flex: 1 }}
+              onClick={() => {
+                onUndoDone(
+                  confirmUndoTarget.routine,
+                  confirmUndoTarget.dateKey
+                );
+                setConfirmUndoTarget(null);
+              }}
+            >
+              <Icon
+                name="ClockCounterClockwise"
+                size={18}
+                weight="bold"
+                color="#f87171"
+              />
+              <span>Deshacer tarea</span>
+            </button>
+          </div>
+        )}
+      </BottomSheet>
 
       <TimePickerSheet
         open={timeSheetConfig.open}

@@ -55,6 +55,8 @@ export type DayRoutineStatus =
 
 export interface RoutineDayRecord {
   routineId: string;
+  /** Nombre guardado de la rutina para conservar su historial pasado aunque se elimine la rutina */
+  routineName?: string;
   /** Fecha lógica de la rutina en formato YYYY-MM-DD */
   dateKey: string;
   status: DayRoutineStatus;
@@ -70,6 +72,16 @@ export interface RoutineDayRecord {
   blockReason?: string;
   /** ID de la rutina origen que causó el bloqueo */
   blockedByRoutineId?: string;
+}
+
+export type PermissionGrantLabel = 'Concedido' | 'Denegado' | 'Pendiente';
+
+export interface SystemNotificationPermissions {
+  display: string;
+  enabledInNotificationCenter: boolean;
+  alerts: PermissionGrantLabel;
+  sound: PermissionGrantLabel;
+  badges: PermissionGrantLabel;
 }
 
 export type ActiveNoticeMode =

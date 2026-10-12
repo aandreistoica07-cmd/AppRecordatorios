@@ -8,6 +8,11 @@ const config: CapacitorConfig = {
   server: {
     androidScheme: 'https',
     iosScheme: 'capacitor'
+  },
+  plugins: {
+    LocalNotifications: {
+      sound: 'default.wav'
+    }
   }
 };
 

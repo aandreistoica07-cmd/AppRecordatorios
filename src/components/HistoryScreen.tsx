@@ -23,7 +23,6 @@ interface HistoryScreenProps {
   records: RoutineDayRecord[];
   blockingRules: BlockingRule[];
   settings: GlobalSettings;
-  onOpenSettingsTab?: () => void;
 }
 
 const WEEKDAY_HEADERS_MON_FIRST = ['L', 'M', 'X', 'J', 'V', 'S', 'D'];
@@ -34,7 +33,6 @@ export const HistoryScreen: React.FC<HistoryScreenProps> = ({
   records,
   blockingRules,
   settings,
-  onOpenSettingsTab,
 }) => {
   const [selectedYear, setSelectedYear] = useState(now.getFullYear());
   const [selectedMonth, setSelectedMonth] = useState(now.getMonth()); // 0-11
@@ -83,34 +81,29 @@ export const HistoryScreen: React.FC<HistoryScreenProps> = ({
   const ringCirc = 2 * Math.PI * ringRadius;
   const ringOffset = ringCirc * (1 - compliance.percentage / 100);
 
+  const isViewingDifferentDayOrMonth =
+    selectedYear !== now.getFullYear() ||
+    selectedMonth !== now.getMonth() ||
+    inspectedDateKey !== todayKey;
+
   return (
     <div className="bevel-today">
-      <div className="bevel-top-actions">
-        <button
-          type="button"
-          className="circle-outline-btn"
-          title="Ir al mes actual"
-          onClick={() => {
-            setSelectedYear(now.getFullYear());
-            setSelectedMonth(now.getMonth());
-            setInspectedDateKey(todayKey);
-          }}
-        >
-          <Icon name="ClockCounterClockwise" size={24} weight="bold" />
-        </button>
-
-        <button
-          type="button"
-          className="circle-outline-btn"
-          title="Ajustes"
-          onClick={() => onOpenSettingsTab?.()}
-        >
-          <Icon name="DotsThree" size={24} weight="bold" />
-        </button>
-      </div>
-
       <div className="bevel-screen-title-row">
         <h1 className="bevel-main-title">Historial</h1>
+        {isViewingDifferentDayOrMonth && (
+          <button
+            type="button"
+            className="bevel-row-action-pill"
+            title="Volver a hoy"
+            onClick={() => {
+              setSelectedYear(now.getFullYear());
+              setSelectedMonth(now.getMonth());
+              setInspectedDateKey(todayKey);
+            }}
+          >
+            <span>Ir a hoy</span>
+          </button>
+        )}
       </div>
 
       {/* Tarjeta de resumen con mini-anillo */}

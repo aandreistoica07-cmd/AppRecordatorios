@@ -2,7 +2,11 @@
 
 import React, { useState } from 'react';
 import { formatHHMM, resolveRoutinePrimaryHHMM } from '../core/scheduler';
-import type { GlobalSettings, ScheduledPrompt } from '../core/types';
+import type {
+  GlobalSettings,
+  ScheduledPrompt,
+  SystemNotificationPermissions,
+} from '../core/types';
 import { triggerLightHaptic } from '../services/deviceBridge';
 import {
   scheduleTestAlarmInOneMinute,
@@ -15,6 +19,7 @@ import { getRoutineTheme } from './routineTheme';
 interface SettingsScreenProps {
   settings: GlobalSettings;
   permissionStatus: string;
+  permissionDetails: SystemNotificationPermissions;
   activeScheduledPrompts: ScheduledPrompt[];
   onUpdateSettings: (next: GlobalSettings) => void;
   onRequestPermissions: () => void;
@@ -23,6 +28,7 @@ interface SettingsScreenProps {
 export const SettingsScreen: React.FC<SettingsScreenProps> = ({
   settings,
   permissionStatus,
+  permissionDetails,
   activeScheduledPrompts,
   onUpdateSettings,
   onRequestPermissions,
@@ -47,25 +53,12 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
   const minoxidilTheme = getRoutineTheme('minoxidil');
 
   const isGranted =
+    permissionDetails.display === 'granted' ||
     permissionStatus.toLowerCase().includes('concedido') ||
     permissionStatus.toLowerCase().includes('granted');
 
   return (
     <div className="bevel-today">
-      <div className="bevel-top-actions">
-        <div className="circle-outline-btn" style={{ cursor: 'default' }}>
-          <Icon name="GearSix" size={24} weight="bold" />
-        </div>
-        <button
-          type="button"
-          className="circle-outline-btn"
-          title="Diagnóstico"
-          onClick={() => setDiagnosticsOpen((v) => !v)}
-        >
-          <Icon name="DotsThree" size={24} weight="bold" />
-        </button>
-      </div>
-
       <div className="bevel-screen-title-row">
         <h1 className="bevel-main-title">Ajustes</h1>
       </div>
@@ -243,7 +236,7 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
             >
               <button
                 type="button"
-                className="secondary-action-btn"
+                className="primary-action-btn"
                 style={{ width: '100%' }}
                 onClick={async () => {
                   void triggerLightHaptic();
@@ -291,6 +284,65 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
                   {testFeedbackText}
                 </div>
               )}
+            </div>
+
+            <div className="ios-grouped-row">
+              <div style={{ minWidth: 0 }}>
+                <div className="sheet-field-label">Permiso de Alertas</div>
+                <div className="sheet-field-sub">
+                  Estado real leído del plugin ({permissionDetails.display})
+                </div>
+              </div>
+              <span
+                className={`history-status-pill ${
+                  permissionDetails.alerts === 'Concedido'
+                    ? 'status-completed'
+                    : 'status-pending'
+                }`}
+              >
+                {permissionDetails.alerts}
+              </span>
+            </div>
+
+            <div className="ios-grouped-row">
+              <div className="sheet-field-label">Permiso de Sonido</div>
+              <span
+                className={`history-status-pill ${
+                  permissionDetails.sound === 'Concedido'
+                    ? 'status-completed'
+                    : 'status-pending'
+                }`}
+              >
+                {permissionDetails.sound}
+              </span>
+            </div>
+
+            <div className="ios-grouped-row">
+              <div className="sheet-field-label">Permiso de Insignias</div>
+              <span
+                className={`history-status-pill ${
+                  permissionDetails.badges === 'Concedido'
+                    ? 'status-completed'
+                    : 'status-pending'
+                }`}
+              >
+                {permissionDetails.badges}
+              </span>
+            </div>
+
+            <div className="ios-grouped-row">
+              <div className="sheet-field-label">Centro de notificaciones</div>
+              <span
+                className={`history-status-pill ${
+                  permissionDetails.enabledInNotificationCenter
+                    ? 'status-completed'
+                    : 'status-pending'
+                }`}
+              >
+                {permissionDetails.enabledInNotificationCenter
+                  ? 'Activo'
+                  : 'Inactivo'}
+              </span>
             </div>
 
             <div className="ios-grouped-row">

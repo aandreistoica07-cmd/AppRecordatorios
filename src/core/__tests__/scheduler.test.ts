@@ -9,12 +9,21 @@ import {
 import {
   buildDateFromKeyAndHHMM,
   computeCurrentStreakDays,
+  computeDueProgressForDay,
   computeSchedule,
   computeWeeklyCompliancePercentage,
+  deleteRoutineAndCleanup,
+  evaluateDaySummary,
+  markRoutineDone,
   postponeRoutineNotAtHome,
   resolveRoutinePrimaryHHMM,
   toggleChecklistStep,
+  unmarkRoutineDone,
 } from '../scheduler';
+import {
+  CURRENT_SCHEMA_VERSION,
+  migrateAndSanitizeState,
+} from '../../services/storage';
 import type { ActiveNoticeMode, GlobalSettings, RoutineDayRecord } from '../types';
 
 describe('Motor puro de rutinas, bloqueos 24h, posposición y modos', () => {
@@ -545,6 +554,430 @@ describe('Motor puro de rutinas, bloqueos 24h, posposición y modos', () => {
     expect(weekly.completedCount).toBe(3); // Pastilla dom + Dermastamp dom + Pastilla lun
     expect(weekly.evaluableCount).toBe(3); // El omitido y la futura de las 22:00 del lunes no penalizan
     expect(weekly.percentage).toBe(100);
+  });
+
+  it('(11) Deshacer dermastamp restaura el minoxidil omitido dentro de la ventana de 24 h a pendiente y reprograma sus alarmas', () => {
+    const settings: GlobalSettings = {
+      ...DEFAULT_GLOBAL_SETTINGS,
+      dermastampWeekday: 0, // Domingo
+      dermastampTimeHHMM: '19:30',
+      sleepTimeHHMM: '00:00', // Minoxidil a las 22:00
+    };
+    const routines = createInitialRoutines(settings);
+    const dermastampRoutine = routines.find((r) => r.id === 'dermastamp')!;
+
+    // El domingo 2026-10-11 a las 20:00 el usuario completa los 2 pasos del Dermastamp
+    const doneAt = buildDateFromKeyAndHHMM('2026-10-11', '20:00');
+    const step1 = toggleChecklistStep(
+      dermastampRoutine,
+      undefined,
+      '2026-10-11',
+      'disinfect',
+      doneAt
+    );
+    const step2 = toggleChecklistStep(
+      dermastampRoutine,
+      step1.record,
+      '2026-10-11',
+      'applied',
+      doneAt
+    );
+    expect(step2.record.status).toBe('completed');
+
+    // Al calcular el horario tras marcar Dermastamp, Minoxidil del 2026-10-11 (22:00) queda bloqueado y auto-omitido
+    const scheduleWhileDone = computeSchedule({
+      now: doneAt,
+      routines,
+      blockingRules: DEFAULT_BLOCKING_RULES,
+      records: [step2.record],
+      settings,
+      noticeMode: { type: 'alarm' },
+    });
+    expect(scheduleWhileDone.autoOmittedRecords).toHaveLength(1);
+    expect(scheduleWhileDone.autoOmittedRecords[0].routineId).toBe('minoxidil');
+    expect(scheduleWhileDone.autoOmittedRecords[0].status).toBe('omitted_by_block');
+
+    const recordsWithAutoOmitted: RoutineDayRecord[] = [
+      step2.record,
+      ...scheduleWhileDone.autoOmittedRecords,
+    ];
+
+    // Ahora el usuario deshace el Dermastamp a las 20:05
+    const updatedRecords = unmarkRoutineDone(
+      'dermastamp',
+      '2026-10-11',
+      recordsWithAutoOmitted,
+      routines,
+      DEFAULT_BLOCKING_RULES,
+      settings
+    );
+
+    const unmarkedRecord = updatedRecords.find(
+      (r) => r.routineId === 'dermastamp' && r.dateKey === '2026-10-11'
+    );
+    expect(unmarkedRecord?.status).toBe('pending');
+    expect(unmarkedRecord?.completedAtISO).toBeUndefined();
+    expect(unmarkedRecord?.completedChecklistSteps).toEqual([]);
+
+    // El registro omitted_by_block de minoxidil ha sido eliminado y vuelve a estar pendiente
+    const minoxRecordAfterUndo = updatedRecords.find(
+      (r) => r.routineId === 'minoxidil' && r.dateKey === '2026-10-11'
+    );
+    expect(minoxRecordAfterUndo).toBeUndefined();
+
+    // Al recalcular a las 20:05, Minoxidil (22:00) y las insistencias restantes del Dermastamp vuelven a programarse
+    const nowAfterUndo = buildDateFromKeyAndHHMM('2026-10-11', '20:05');
+    const scheduleAfterUndo = computeSchedule({
+      now: nowAfterUndo,
+      routines,
+      blockingRules: DEFAULT_BLOCKING_RULES,
+      records: updatedRecords,
+      settings,
+      noticeMode: { type: 'alarm' },
+    });
+
+    const minoxOverview = scheduleAfterUndo.upcomingSevenDaysOverview.find(
+      (p) => p.routineId === 'minoxidil' && p.dateKey === '2026-10-11'
+    );
+    expect(minoxOverview?.blocked).toBe(false);
+
+    const minoxPromptsToday = scheduleAfterUndo.activePromptsToSchedule.filter(
+      (p) => p.routineId === 'minoxidil' && p.dateKey === '2026-10-11'
+    );
+    expect(minoxPromptsToday.length).toBeGreaterThan(0);
+
+    const dermastampInsistenceToday = scheduleAfterUndo.activePromptsToSchedule.filter(
+      (p) => p.routineId === 'dermastamp' && p.dateKey === '2026-10-11'
+    );
+    expect(dermastampInsistenceToday.length).toBeGreaterThan(0);
+  });
+
+  it('(12) Deshacer pastilla de la mañana restaura el segundo aviso de la tarde y sus insistencias', () => {
+    const settings: GlobalSettings = {
+      ...DEFAULT_GLOBAL_SETTINGS,
+      pillMorningTimeHHMM: '09:00',
+      pillAfternoonTimeHHMM: '15:30',
+    };
+    const routines = createInitialRoutines(settings);
+    const pastillaRoutine = routines.find((r) => r.id === 'pastilla')!;
+
+    // A las 09:05 el usuario marca la pastilla como hecha
+    const doneAt = buildDateFromKeyAndHHMM('2026-10-12', '09:05');
+    const marked = markRoutineDone(pastillaRoutine, undefined, '2026-10-12', doneAt);
+    expect(marked.record.status).toBe('completed');
+
+    // Mientras está marcada como hecha, no hay ningún aviso de tarde programado para el 2026-10-12
+    const scheduleWhileDone = computeSchedule({
+      now: doneAt,
+      routines,
+      blockingRules: DEFAULT_BLOCKING_RULES,
+      records: [marked.record],
+      settings,
+      noticeMode: { type: 'alarm' },
+    });
+    const afternoonWhileDone = scheduleWhileDone.activePromptsToSchedule.filter(
+      (p) => p.routineId === 'pastilla' && p.dateKey === '2026-10-12'
+    );
+    expect(afternoonWhileDone).toHaveLength(0);
+
+    // A las 10:30 el usuario deshace la pastilla
+    const now1030 = buildDateFromKeyAndHHMM('2026-10-12', '10:30');
+    const updatedRecords = unmarkRoutineDone(
+      'pastilla',
+      '2026-10-12',
+      [marked.record],
+      routines,
+      DEFAULT_BLOCKING_RULES,
+      settings
+    );
+    const unmarked = updatedRecords.find(
+      (r) => r.routineId === 'pastilla' && r.dateKey === '2026-10-12'
+    );
+    expect(unmarked?.status).toBe('pending');
+
+    const scheduleAfterUndo = computeSchedule({
+      now: now1030,
+      routines,
+      blockingRules: DEFAULT_BLOCKING_RULES,
+      records: updatedRecords,
+      settings,
+      noticeMode: { type: 'alarm' },
+    });
+
+    // El segundo aviso de la tarde (15:30) y sus insistencias vuelven a estar en la cola activa
+    const afternoonPrimary = scheduleAfterUndo.activePromptsToSchedule.find(
+      (p) =>
+        p.routineId === 'pastilla' &&
+        p.dateKey === '2026-10-12' &&
+        p.kind === 'secondary_primary'
+    );
+    expect(afternoonPrimary).toBeDefined();
+    expect(afternoonPrimary?.scheduledAtISO).toBe(
+      buildDateFromKeyAndHHMM('2026-10-12', '15:30').toISOString()
+    );
+
+    const afternoonInsistences = scheduleAfterUndo.activePromptsToSchedule.filter(
+      (p) =>
+        p.routineId === 'pastilla' &&
+        p.dateKey === '2026-10-12' &&
+        p.kind === 'secondary_insistence'
+    );
+    expect(afternoonInsistences.length).toBeGreaterThan(0);
+  });
+
+  it('(13) Deshacer una tarea completada recalcula la racha y los porcentajes de cumplimiento diario y semanal', () => {
+    const settings: GlobalSettings = {
+      ...DEFAULT_GLOBAL_SETTINGS,
+      pillMorningTimeHHMM: '09:00',
+      sleepTimeHHMM: '00:00', // Minoxidil 22:00
+    };
+    const routines = createInitialRoutines(settings);
+    const now2230 = buildDateFromKeyAndHHMM('2026-10-12', '22:30'); // Lunes 22:30 (ambas vencidas)
+
+    // Día anterior (domingo 2026-10-11) 100% completado + lunes 2026-10-12 100% completado -> racha = 2 días
+    const recordsCompleted: RoutineDayRecord[] = [
+      {
+        routineId: 'pastilla',
+        dateKey: '2026-10-11',
+        status: 'completed',
+        completedAtISO: buildDateFromKeyAndHHMM('2026-10-11', '09:05').toISOString(),
+      },
+      {
+        routineId: 'dermastamp',
+        dateKey: '2026-10-11',
+        status: 'completed',
+        completedAtISO: buildDateFromKeyAndHHMM('2026-10-11', '20:05').toISOString(),
+        completedChecklistSteps: ['disinfect', 'applied'],
+      },
+      {
+        routineId: 'pastilla',
+        dateKey: '2026-10-12',
+        status: 'completed',
+        completedAtISO: buildDateFromKeyAndHHMM('2026-10-12', '09:05').toISOString(),
+      },
+      {
+        routineId: 'minoxidil',
+        dateKey: '2026-10-12',
+        status: 'completed',
+        completedAtISO: buildDateFromKeyAndHHMM('2026-10-12', '22:05').toISOString(),
+      },
+    ];
+
+    expect(
+      computeCurrentStreakDays(
+        '2026-10-12',
+        routines,
+        recordsCompleted,
+        DEFAULT_BLOCKING_RULES,
+        settings
+      )
+    ).toBe(2);
+    expect(
+      computeDueProgressForDay(
+        now2230,
+        routines,
+        recordsCompleted,
+        DEFAULT_BLOCKING_RULES,
+        settings
+      ).percentage
+    ).toBe(100);
+    expect(
+      computeWeeklyCompliancePercentage(
+        now2230,
+        routines,
+        recordsCompleted,
+        DEFAULT_BLOCKING_RULES,
+        settings
+      ).percentage
+    ).toBe(100);
+
+    // Deshacemos Minoxidil del lunes 2026-10-12
+    const updatedRecords = unmarkRoutineDone(
+      'minoxidil',
+      '2026-10-12',
+      recordsCompleted,
+      routines,
+      DEFAULT_BLOCKING_RULES,
+      settings
+    );
+
+    // La racha baja de 2 a 1 (el domingo sigue completo, pero hoy lunes vuelve a estar en progreso)
+    expect(
+      computeCurrentStreakDays(
+        '2026-10-12',
+        routines,
+        updatedRecords,
+        DEFAULT_BLOCKING_RULES,
+        settings
+      )
+    ).toBe(1);
+
+    // El progreso vencido de hoy lunes baja de 100% (2/2) a 50% (1/2)
+    const todayProgressAfterUndo = computeDueProgressForDay(
+      now2230,
+      routines,
+      updatedRecords,
+      DEFAULT_BLOCKING_RULES,
+      settings
+    );
+    expect(todayProgressAfterUndo.completedDueCount).toBe(1);
+    expect(todayProgressAfterUndo.totalDueCount).toBe(2);
+    expect(todayProgressAfterUndo.percentage).toBe(50);
+
+    // El cumplimiento semanal baja de 100% (4/4) a 75% (3/4)
+    const weeklyAfterUndo = computeWeeklyCompliancePercentage(
+      now2230,
+      routines,
+      updatedRecords,
+      DEFAULT_BLOCKING_RULES,
+      settings
+    );
+    expect(weeklyAfterUndo.completedCount).toBe(3);
+    expect(weeklyAfterUndo.evaluableCount).toBe(4);
+    expect(weeklyAfterUndo.percentage).toBe(75);
+  });
+
+  it('(14) Eliminar rutina: devuelve IDs de alarmas a cancelar, borra reglas de bloqueo que la referencian y conserva su historial pasado con el nombre guardado', () => {
+    const settings = { ...DEFAULT_GLOBAL_SETTINGS };
+    const routines = createInitialRoutines(settings);
+    const now = buildDateFromKeyAndHHMM('2026-10-11', '12:00');
+
+    const records: RoutineDayRecord[] = [
+      {
+        routineId: 'dermastamp',
+        dateKey: '2026-10-04', // Domingo pasado completado
+        status: 'completed',
+        completedAtISO: buildDateFromKeyAndHHMM('2026-10-04', '20:10').toISOString(),
+      },
+    ];
+
+    const preSchedule = computeSchedule({
+      now,
+      routines,
+      blockingRules: DEFAULT_BLOCKING_RULES,
+      records,
+      settings,
+      noticeMode: { type: 'alarm' },
+    });
+
+    const cleanup = deleteRoutineAndCleanup({
+      routineId: 'dermastamp',
+      todayKey: '2026-10-11',
+      routines,
+      blockingRules: DEFAULT_BLOCKING_RULES,
+      records,
+      activePrompts: preSchedule.activePromptsToSchedule,
+    });
+
+    // 1. La rutina ya no está en la lista activa
+    expect(cleanup.routines.some((r) => r.id === 'dermastamp')).toBe(false);
+    // 2. Se borraron las reglas de bloqueo que referenciaban a dermastamp
+    expect(
+      cleanup.blockingRules.some(
+        (b) =>
+          b.sourceRoutineId === 'dermastamp' || b.targetRoutineId === 'dermastamp'
+      )
+    ).toBe(false);
+    // 3. Se devolvieron los IDs numéricos de sus alarmas programadas para cancelarlas
+    expect(cleanup.cancelledNumericIds.length).toBeGreaterThan(0);
+    // 4. El historial pasado se conserva con routineName = "Dermastamp"
+    const preservedRecord = cleanup.records.find(
+      (r) => r.routineId === 'dermastamp' && r.dateKey === '2026-10-04'
+    );
+    expect(preservedRecord).toBeDefined();
+    expect(preservedRecord?.routineName).toBe('Dermastamp');
+
+    // Al inspeccionar el día pasado 2026-10-04 en Historial, aparece con su nombre guardado "Dermastamp"
+    const pastDaySummary = evaluateDaySummary(
+      '2026-10-04',
+      '2026-10-11',
+      cleanup.routines,
+      cleanup.records,
+      cleanup.blockingRules,
+      settings
+    );
+    const deletedRoutineInHistory = pastDaySummary.routineStatuses.find(
+      (item) => item.routineId === 'dermastamp'
+    );
+    expect(deletedRoutineInHistory).toBeDefined();
+    expect(deletedRoutineInHistory?.routineName).toBe('Dermastamp');
+    expect(deletedRoutineInHistory?.status).toBe('completed');
+  });
+
+  it('(15) Esquema guardado con versión y migración segura + soporte de 6 rutinas con nombres largos', () => {
+    const settings = { ...DEFAULT_GLOBAL_SETTINGS };
+    const baseRoutines = createInitialRoutines(settings);
+    const sixLongRoutines = [
+      ...baseRoutines,
+      {
+        id: 'locion-capilar-nocturna-extra-fuerte',
+        name: 'Loción Capilar Nocturna Extra Fuerte Con Biotina y Cafeína',
+        enabled: true,
+        scheduleType: 'fixed_daily' as const,
+        fixedTimeHHMM: '21:15',
+        insistIntervalMinutes: 10,
+        insistDurationMinutes: 60,
+        allowDiscreetMode: true,
+      },
+      {
+        id: 'suplemento-complejo-vitaminico-b12-zinc',
+        name: 'Suplemento Complejo Vitamínico B12 + Zinc Quelado Mañana',
+        enabled: true,
+        scheduleType: 'fixed_daily' as const,
+        fixedTimeHHMM: '10:30',
+        insistIntervalMinutes: 15,
+        insistDurationMinutes: 60,
+        allowDiscreetMode: true,
+      },
+      {
+        id: 'masaje-cuero-cabelludo-estimulacion-folicular',
+        name: 'Masaje de Cuero Cabelludo para Estimulación Folicular Profunda',
+        enabled: true,
+        scheduleType: 'weekly' as const,
+        weekday: 3,
+        fixedTimeHHMM: '19:45',
+        insistIntervalMinutes: 15,
+        insistDurationMinutes: 60,
+        allowDiscreetMode: false,
+      },
+    ];
+
+    expect(sixLongRoutines).toHaveLength(6);
+
+    // Simular datos guardados de una versión anterior (sin schemaVersion y con campos corruptos/antiguos)
+    const migrated = migrateAndSanitizeState({
+      schemaVersion: null,
+      settings: { sleepTimeHHMM: '01:00', pillMorningTimeHHMM: 'bad-time' },
+      routines: sixLongRoutines,
+      blockingRules: DEFAULT_BLOCKING_RULES,
+      records: [
+        {
+          routineId: 'pastilla',
+          dateKey: '2026-10-10',
+          status: 'completed',
+          // Sin routineName en versión v1: la migración lo rellena automáticamente
+        },
+        {
+          // Registro corrupto que debe ser descartado sin romper el arranque
+          routineId: '',
+          dateKey: 'invalid-date',
+          status: 'unknown_status',
+        },
+      ],
+      noticeMode: { type: 'discreet', untilISO: 'invalid-iso' },
+    });
+
+    expect(migrated.schemaVersion).toBe(CURRENT_SCHEMA_VERSION);
+    expect(migrated.settings.sleepTimeHHMM).toBe('01:00');
+    // El campo inválido 'bad-time' usa el fallback seguro
+    expect(migrated.settings.pillMorningTimeHHMM).toBe(
+      DEFAULT_GLOBAL_SETTINGS.pillMorningTimeHHMM
+    );
+    expect(migrated.routines).toHaveLength(6);
+    expect(migrated.records).toHaveLength(1);
+    expect(migrated.records[0].routineName).toBe('Pastilla');
+    // Un modo discreto sin untilISO válido se sanea a 'alarm' para no bloquear el arranque
+    expect(migrated.noticeMode.type).toBe('alarm');
   });
 });
 

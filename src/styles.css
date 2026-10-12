@@ -359,10 +359,25 @@ body,
 
 /* Título principal 34px/700 como en Inicio ("Hoy, 12 de octubre v") */
 .bevel-screen-title-row {
+  padding-top: env(safe-area-inset-top, 0px);
   display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 2px;
+}
+
+.bevel-screen-title-btn {
+  background: transparent;
+  border: none;
+  padding: 0;
+  font-family: var(--font-family);
+  color: var(--text-primary);
+  display: inline-flex;
   align-items: baseline;
   gap: 8px;
-  margin-top: -2px;
+  cursor: pointer;
+  text-align: left;
 }
 
 .bevel-main-title {
@@ -397,8 +412,12 @@ body,
   transition: transform 0.15s var(--ease-out);
 }
 
-.bevel-status-chip:active {
+.bevel-status-chip:active:not(.is-static) {
   transform: scale(0.98);
+}
+
+.bevel-status-chip.is-static {
+  cursor: default;
 }
 
 .chip-left-group {
@@ -713,7 +732,10 @@ body,
   font-weight: 600;
   color: var(--text-primary);
   letter-spacing: -0.015em;
-  line-height: 1.2;
+  line-height: 1.25;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .bevel-routine-sub {
@@ -721,7 +743,10 @@ body,
   font-weight: 500;
   color: var(--text-secondary);
   margin-top: 4px;
-  line-height: 1.3;
+  line-height: 1.35;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 /* Píldora de acción a la derecha de la fila (estilo Diario) */
@@ -776,6 +801,12 @@ body,
 
 /* @section: Sliding-Segmented-Control-And-Sheets */
 
+html.sheet-scroll-locked,
+body.sheet-scroll-locked {
+  overflow: hidden !important;
+  overscroll-behavior: none !important;
+}
+
 .segmented-control {
   position: relative;
   display: grid;
@@ -807,16 +838,65 @@ body,
   background: transparent;
   color: var(--text-secondary);
   font-family: var(--font-family);
-  font-size: 15px;
+  font-size: 14.5px;
   font-weight: 600;
+  line-height: 1.2;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  text-align: center;
   cursor: pointer;
-  padding: 0 12px;
+  padding: 6px 8px;
   transition: color 0.2s var(--ease-out);
 }
 
 .segmented-option.active {
   color: var(--text-primary);
   font-weight: 700;
+}
+
+.wrap-choice-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.wrap-choice-chip {
+  min-height: 44px;
+  max-width: 100%;
+  padding: 8px 14px;
+  border-radius: 16px;
+  background: var(--segmented-track-bg);
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  color: var(--text-secondary);
+  font-family: var(--font-family);
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.25;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.2s var(--ease-out), border-color 0.2s var(--ease-out), transform 0.15s var(--ease-out);
+}
+
+.wrap-choice-chip:active {
+  transform: scale(0.97);
+}
+
+.wrap-choice-chip.active {
+  background: rgba(39, 211, 175, 0.14);
+  border-color: rgba(39, 211, 175, 0.45);
+  color: var(--text-primary);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12);
+}
+
+.wrap-choice-chip-label {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  min-width: 0;
 }
 
 .ios-switch {
@@ -859,20 +939,32 @@ body,
   display: flex;
   align-items: flex-end;
   justify-content: center;
+  overscroll-behavior: contain;
 }
 
 .bottom-sheet {
   width: 100%;
   max-width: 430px;
+  max-height: 85dvh;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
   background: var(--surface-card);
   border-top: 1px solid rgba(255, 255, 255, 0.14);
   border-top-left-radius: 30px;
   border-top-right-radius: 30px;
-  padding: 14px 22px calc(env(safe-area-inset-bottom, 20px) + 24px);
+  padding: 14px 22px calc(env(safe-area-inset-bottom, 20px) + 28px);
   display: flex;
   flex-direction: column;
-  gap: 20px;
+  gap: 18px;
   box-shadow: 0 -16px 44px rgba(0, 0, 0, 0.55);
+}
+
+.sheet-scroll-body {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  min-width: 0;
 }
 
 .sheet-handle {
@@ -881,24 +973,39 @@ body,
   border-radius: var(--radius-pill);
   background: rgba(255, 255, 255, 0.22);
   align-self: center;
+  flex-shrink: 0;
 }
 
 .sheet-header {
   display: flex;
   justify-content: space-between;
   align-items: flex-start;
+  gap: 12px;
+}
+
+.sheet-header-text {
+  min-width: 0;
+  flex: 1;
 }
 
 .sheet-title {
   font-size: 22px;
   font-weight: 700;
   color: var(--text-primary);
+  line-height: 1.2;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .sheet-subtitle {
   font-size: 15px;
   color: var(--text-secondary);
   margin-top: 4px;
+  line-height: 1.35;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .icon-circle-btn {
@@ -912,6 +1019,7 @@ body,
   align-items: center;
   justify-content: center;
   cursor: pointer;
+  flex-shrink: 0;
 }
 
 .time-wheel-preview {
@@ -944,6 +1052,7 @@ body,
 .wheel-scroll-list {
   max-height: 180px;
   overflow-y: auto;
+  overscroll-behavior: contain;
   background: var(--segmented-track-bg);
   border-radius: 18px;
   padding: 6px;
@@ -972,7 +1081,7 @@ body,
 
 .primary-action-btn {
   min-height: 52px;
-  padding: 0 22px;
+  padding: 10px 22px;
   border-radius: var(--radius-pill);
   background: var(--chip-active-grad);
   color: #ffffff;
@@ -980,12 +1089,55 @@ body,
   font-family: var(--font-family);
   font-size: 17px;
   font-weight: 700;
+  line-height: 1.2;
+  white-space: normal;
+  text-align: center;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 8px;
   cursor: pointer;
   box-shadow: 0 8px 20px rgba(15, 168, 138, 0.3);
+  transition: transform 0.15s var(--ease-out);
+}
+
+.primary-action-btn:active {
+  transform: scale(0.98);
+}
+
+.danger-action-btn {
+  min-height: 50px;
+  padding: 10px 20px;
+  border-radius: var(--radius-pill);
+  background: rgba(248, 113, 113, 0.14);
+  color: #f87171;
+  border: 1px solid rgba(248, 113, 113, 0.34);
+  font-family: var(--font-family);
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 1.2;
+  white-space: normal;
+  text-align: center;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  cursor: pointer;
+  transition: transform 0.15s var(--ease-out), background 0.2s var(--ease-out);
+}
+
+.danger-action-btn:active {
+  transform: scale(0.98);
+}
+
+.confirm-inline-box {
+  background: rgba(248, 113, 113, 0.09);
+  border: 1px solid rgba(248, 113, 113, 0.32);
+  border-radius: 20px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
 }
 
 /* @end: Sliding-Segmented-Control-And-Sheets */
@@ -1040,10 +1192,19 @@ body,
   gap: 12px;
 }
 
+.sheet-row-between > div:first-child {
+  min-width: 0;
+  flex: 1;
+}
+
 .sheet-field-label {
   font-size: 16px;
   font-weight: 600;
   color: var(--text-primary);
+  line-height: 1.25;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .sheet-field-sub {
@@ -1051,6 +1212,10 @@ body,
   font-weight: 500;
   color: var(--text-secondary);
   margin-top: 2px;
+  line-height: 1.35;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .time-trigger-pill {
