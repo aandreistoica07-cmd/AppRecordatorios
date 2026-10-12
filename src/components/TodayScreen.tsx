@@ -938,41 +938,20 @@ export const TodayScreen: React.FC<TodayScreenProps> = ({
 
                   {/* Botón "Hecho" con Check weight="bold" o botón de deshacer si está completada */}
                   {!isCompleted && !isOmitted ? (
-                    <div style={{ display: 'flex', gap: '8px', flexShrink: 0 }}>
-                      <button
-                        type="button"
-                        className="bevel-row-action-pill"
-                        title={`Posponer ${routine.name}`}
-                        onClick={() =>
-                          setOpenPostponeRoutineId((prev) =>
-                            prev === routine.id ? null : routine.id
-                          )
-                        }
-                      >
-                        <Icon
-                          name="Clock"
-                          size={18}
-                          weight="bold"
-                          color="var(--text-secondary)"
-                        />
-                        <span>Posponer</span>
-                      </button>
-
-                      <button
-                        type="button"
-                        className="bevel-row-action-pill done-active"
-                        disabled={!canCompleteChecklist}
-                        onClick={() => onMarkDone(routine, selectedDateKey)}
-                      >
-                        <Icon
-                          name="Check"
-                          size={18}
-                          weight="bold"
-                          color="#27d3af"
-                        />
-                        <span>Hecho</span>
-                      </button>
-                    </div>
+                    <button
+                      type="button"
+                      className="bevel-row-action-pill done-active"
+                      disabled={!canCompleteChecklist}
+                      onClick={() => onMarkDone(routine, selectedDateKey)}
+                    >
+                      <Icon
+                        name="Check"
+                        size={18}
+                        weight="bold"
+                        color="#27d3af"
+                      />
+                      <span>Hecho</span>
+                    </button>
                   ) : isCompleted ? (
                     <button
                       type="button"
@@ -1005,91 +984,6 @@ export const TodayScreen: React.FC<TodayScreenProps> = ({
                     </div>
                   )}
                 </div>
-
-                {/* Selector de posposición por tarea (1 h, 2 h, 4 h, Hora…) */}
-                {isPostponeDrawerOpen && (
-                  <div
-                    style={{
-                      display: 'flex',
-                      flexDirection: 'column',
-                      gap: '8px',
-                      paddingTop: '8px',
-                      borderTop: '1px solid var(--border-subtle)',
-                    }}
-                  >
-                    <div
-                      style={{
-                        display: 'flex',
-                        justifyContent: 'space-between',
-                        alignItems: 'center',
-                      }}
-                    >
-                      <span
-                        className="routine-subtext"
-                        style={{ fontSize: '13px' }}
-                      >
-                        Posponer aviso principal (tope {settings.sleepTimeHHMM})
-                      </span>
-                      {isPostponedPrimary && (
-                        <button
-                          type="button"
-                          className="bevel-row-action-pill"
-                          style={{
-                            minHeight: '30px',
-                            padding: '4px 10px',
-                            fontSize: '12px',
-                          }}
-                          onClick={() => {
-                            onResetTaskPostpone(routine, selectedDateKey);
-                            setOpenPostponeRoutineId(null);
-                          }}
-                        >
-                          <span>Restablecer ({basePrimaryHHMM})</span>
-                        </button>
-                      )}
-                    </div>
-                    <div
-                      style={{
-                        display: 'grid',
-                        gridTemplateColumns: 'repeat(4, 1fr)',
-                        gap: '8px',
-                      }}
-                    >
-                      {([1, 2, 4] as const).map((hrs) => (
-                        <button
-                          key={hrs}
-                          type="button"
-                          className="bevel-row-action-pill"
-                          style={{ padding: '8px 6px', fontSize: '14px' }}
-                          onClick={() => {
-                            onPostponeTask(routine, selectedDateKey, {
-                              type: 'add_hours',
-                              hours: hrs,
-                            });
-                            setOpenPostponeRoutineId(null);
-                          }}
-                        >
-                          <span>+{hrs} h</span>
-                        </button>
-                      ))}
-                      <button
-                        type="button"
-                        className="bevel-row-action-pill"
-                        style={{ padding: '8px 6px', fontSize: '14px' }}
-                        onClick={() => {
-                          setPostponeTimeSheetTarget({
-                            routine,
-                            dateKey: selectedDateKey,
-                            initialHHMM: primaryHHMM,
-                          });
-                          setOpenPostponeRoutineId(null);
-                        }}
-                      >
-                        <span>Hora…</span>
-                      </button>
-                    </div>
-                  </div>
-                )}
 
                 {/* Checklist de 2 pasos del Dermastamp */}
                 {hasChecklist && !isCompleted && !isOmitted && (
@@ -1152,36 +1046,172 @@ export const TodayScreen: React.FC<TodayScreenProps> = ({
                   </div>
                 )}
 
-                {/* Botón secundario "No estoy en casa" en la Pastilla */}
-                {!isCompleted &&
-                  !isOmitted &&
-                  routine.secondarySchedule?.allowNotAtHomePostpone && (
+                {/* Fila secundaria de acciones: Posponer por tarea + No estoy en casa (si aplica) */}
+                {!isCompleted && !isOmitted && (
+                  <div
+                    style={{
+                      display: 'flex',
+                      flexWrap: 'wrap',
+                      gap: '8px',
+                    }}
+                  >
                     <button
                       type="button"
                       className="bevel-row-action-pill"
-                      style={{ width: '100%' }}
-                      disabled={
-                        afternoonHHMM ===
-                        routine.secondarySchedule.maxPostponeTimeHHMM
-                      }
+                      style={{
+                        flex: 1,
+                        minHeight: '40px',
+                        padding: '0 14px',
+                        fontSize: '14.5px',
+                      }}
+                      title={`Posponer ${routine.name}`}
                       onClick={() =>
-                        onPostponeNotAtHome(routine, selectedDateKey)
+                        setOpenPostponeRoutineId((prev) =>
+                          prev === routine.id ? null : routine.id
+                        )
                       }
                     >
                       <Icon
-                        name="House"
-                        size={18}
+                        name="Clock"
+                        size={17}
                         weight="bold"
                         color="var(--text-secondary)"
                       />
                       <span>
-                        {afternoonHHMM ===
-                        routine.secondarySchedule.maxPostponeTimeHHMM
-                          ? 'Límite de las 22:00 alcanzado'
-                          : `No estoy en casa (+1h → ${afternoonHHMM})`}
+                        {isPostponedPrimary
+                          ? `Posponer (${primaryHHMM})`
+                          : 'Posponer'}
                       </span>
                     </button>
-                  )}
+
+                    {routine.secondarySchedule?.allowNotAtHomePostpone && (
+                      <button
+                        type="button"
+                        className="bevel-row-action-pill"
+                        style={{
+                          flex: 1,
+                          minHeight: '40px',
+                          padding: '0 14px',
+                          fontSize: '14.5px',
+                        }}
+                        disabled={
+                          afternoonHHMM ===
+                          routine.secondarySchedule.maxPostponeTimeHHMM
+                        }
+                        onClick={() =>
+                          onPostponeNotAtHome(routine, selectedDateKey)
+                        }
+                      >
+                        <Icon
+                          name="House"
+                          size={17}
+                          weight="bold"
+                          color="var(--text-secondary)"
+                        />
+                        <span>
+                          {afternoonHHMM ===
+                          routine.secondarySchedule.maxPostponeTimeHHMM
+                            ? 'Tope 22:00'
+                            : `No estoy en casa (+1h → ${afternoonHHMM})`}
+                        </span>
+                      </button>
+                    )}
+                  </div>
+                )}
+
+                {/* Selector desplegable de posposición por tarea (1 h, 2 h, 4 h, Hora…) */}
+                {isPostponeDrawerOpen && (
+                  <div
+                    style={{
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: '8px',
+                      paddingTop: '8px',
+                      borderTop: '1px solid var(--border-subtle)',
+                    }}
+                  >
+                    <div
+                      style={{
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        alignItems: 'center',
+                        gap: '8px',
+                      }}
+                    >
+                      <span
+                        className="routine-subtext"
+                        style={{ fontSize: '13px' }}
+                      >
+                        Posponer aviso principal (tope {settings.sleepTimeHHMM})
+                      </span>
+                      {isPostponedPrimary && (
+                        <button
+                          type="button"
+                          className="bevel-row-action-pill"
+                          style={{
+                            minHeight: '30px',
+                            padding: '4px 10px',
+                            fontSize: '12px',
+                          }}
+                          onClick={() => {
+                            onResetTaskPostpone(routine, selectedDateKey);
+                            setOpenPostponeRoutineId(null);
+                          }}
+                        >
+                          <span>Restablecer ({basePrimaryHHMM})</span>
+                        </button>
+                      )}
+                    </div>
+                    <div
+                      style={{
+                        display: 'grid',
+                        gridTemplateColumns: 'repeat(4, 1fr)',
+                        gap: '8px',
+                      }}
+                    >
+                      {([1, 2, 4] as const).map((hrs) => (
+                        <button
+                          key={hrs}
+                          type="button"
+                          className="bevel-row-action-pill"
+                          style={{
+                            minHeight: '38px',
+                            padding: '6px 4px',
+                            fontSize: '14px',
+                          }}
+                          onClick={() => {
+                            onPostponeTask(routine, selectedDateKey, {
+                              type: 'add_hours',
+                              hours: hrs,
+                            });
+                            setOpenPostponeRoutineId(null);
+                          }}
+                        >
+                          <span>+{hrs} h</span>
+                        </button>
+                      ))}
+                      <button
+                        type="button"
+                        className="bevel-row-action-pill"
+                        style={{
+                          minHeight: '38px',
+                          padding: '6px 4px',
+                          fontSize: '14px',
+                        }}
+                        onClick={() => {
+                          setPostponeTimeSheetTarget({
+                            routine,
+                            dateKey: selectedDateKey,
+                            initialHHMM: primaryHHMM,
+                          });
+                          setOpenPostponeRoutineId(null);
+                        }}
+                      >
+                        <span>Hora…</span>
+                      </button>
+                    </div>
+                  </div>
+                )}
               </article>
             );
           })}

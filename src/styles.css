@@ -716,6 +716,11 @@ body,
   flex: 1;
 }
 
+.bevel-row-left > div:last-child {
+  flex: 1;
+  min-width: 0;
+}
+
 .bevel-routine-orb {
   width: 54px;
   height: 54px;
@@ -734,8 +739,8 @@ body,
   letter-spacing: -0.015em;
   line-height: 1.25;
   white-space: normal;
-  overflow-wrap: anywhere;
-  word-break: break-word;
+  overflow-wrap: break-word;
+  word-break: normal;
 }
 
 .bevel-routine-sub {
@@ -745,8 +750,8 @@ body,
   margin-top: 4px;
   line-height: 1.35;
   white-space: normal;
-  overflow-wrap: anywhere;
-  word-break: break-word;
+  overflow-wrap: break-word;
+  word-break: normal;
 }
 
 /* Píldora de acción a la derecha de la fila (estilo Diario) */
@@ -842,8 +847,8 @@ body.sheet-scroll-locked {
   font-weight: 600;
   line-height: 1.2;
   white-space: normal;
-  overflow-wrap: anywhere;
-  word-break: break-word;
+  overflow-wrap: break-word;
+  word-break: normal;
   text-align: center;
   cursor: pointer;
   padding: 6px 8px;
@@ -894,8 +899,8 @@ body.sheet-scroll-locked {
 
 .wrap-choice-chip-label {
   white-space: normal;
-  overflow-wrap: anywhere;
-  word-break: break-word;
+  overflow-wrap: break-word;
+  word-break: normal;
   min-width: 0;
 }
 
@@ -994,8 +999,8 @@ body.sheet-scroll-locked {
   color: var(--text-primary);
   line-height: 1.2;
   white-space: normal;
-  overflow-wrap: anywhere;
-  word-break: break-word;
+  overflow-wrap: break-word;
+  word-break: normal;
 }
 
 .sheet-subtitle {
@@ -1004,8 +1009,8 @@ body.sheet-scroll-locked {
   margin-top: 4px;
   line-height: 1.35;
   white-space: normal;
-  overflow-wrap: anywhere;
-  word-break: break-word;
+  overflow-wrap: break-word;
+  word-break: normal;
 }
 
 .icon-circle-btn {
@@ -1213,8 +1218,8 @@ body.sheet-scroll-locked {
   color: var(--text-primary);
   line-height: 1.25;
   white-space: normal;
-  overflow-wrap: anywhere;
-  word-break: break-word;
+  overflow-wrap: break-word;
+  word-break: normal;
 }
 
 .sheet-field-sub {
@@ -1224,8 +1229,8 @@ body.sheet-scroll-locked {
   margin-top: 2px;
   line-height: 1.35;
   white-space: normal;
-  overflow-wrap: anywhere;
-  word-break: break-word;
+  overflow-wrap: break-word;
+  word-break: normal;
 }
 
 .time-trigger-pill {
@@ -1339,6 +1344,11 @@ body.sheet-scroll-locked {
   display: flex;
   align-items: center;
   gap: 16px;
+}
+
+.bevel-summary-ring-card > div:last-child {
+  flex: 1;
+  min-width: 0;
 }
 
 .bevel-calendar-card {
@@ -1509,6 +1519,11 @@ body.sheet-scroll-locked {
   gap: 12px;
   padding: 9px 0;
   border-bottom: 1px solid var(--border-subtle);
+}
+
+.ios-grouped-row > div:first-child {
+  flex: 1;
+  min-width: 0;
 }
 
 .ios-grouped-row:last-child {
