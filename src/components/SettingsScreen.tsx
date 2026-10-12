@@ -3,6 +3,11 @@
 import React, { useState } from 'react';
 import { formatHHMM, resolveRoutinePrimaryHHMM } from '../core/scheduler';
 import type { GlobalSettings, ScheduledPrompt } from '../core/types';
+import { triggerLightHaptic } from '../services/deviceBridge';
+import {
+  scheduleTestAlarmInOneMinute,
+  scheduleTestNotificationInOneMinute,
+} from '../services/notificationAdapter';
 import { IOSSwitch, TimePickerSheet } from './CustomControls';
 import { Icon } from './Icon';
 import { getRoutineTheme } from './routineTheme';
@@ -24,6 +29,7 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
 }) => {
   const [showSleepPicker, setShowSleepPicker] = useState(false);
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
+  const [testFeedbackText, setTestFeedbackText] = useState<string | null>(null);
 
   const derivedMinoxidilHHMM = resolveRoutinePrimaryHHMM(
     {
@@ -227,6 +233,66 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
 
         {diagnosticsOpen && (
           <div className="diagnostics-body">
+            <div
+              style={{
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '10px',
+                paddingBottom: '8px',
+              }}
+            >
+              <button
+                type="button"
+                className="secondary-action-btn"
+                style={{ width: '100%' }}
+                onClick={async () => {
+                  void triggerLightHaptic();
+                  const res = await scheduleTestNotificationInOneMinute(settings);
+                  setTestFeedbackText(
+                    `Aviso de prueba programado: sonará a las ${res.targetTimeHHMMSS}`
+                  );
+                }}
+              >
+                <Icon name="BellRinging" size={18} weight="fill" />
+                <span>Aviso de prueba en 1 minuto</span>
+              </button>
+
+              <button
+                type="button"
+                className="primary-action-btn"
+                style={{ width: '100%' }}
+                onClick={async () => {
+                  void triggerLightHaptic();
+                  const res = await scheduleTestAlarmInOneMinute(settings);
+                  setTestFeedbackText(
+                    `Alarma de prueba programada: sonará a las ${res.targetTimeHHMMSS}`
+                  );
+                }}
+              >
+                <Icon name="SpeakerHigh" size={18} weight="fill" />
+                <span>Alarma de prueba en 1 minuto</span>
+              </button>
+
+              {testFeedbackText && (
+                <div
+                  role="status"
+                  style={{
+                    fontSize: '13px',
+                    fontWeight: 600,
+                    color: 'var(--accent-emerald)',
+                    textAlign: 'center',
+                    padding: '6px 10px',
+                    borderRadius: '12px',
+                    background: 'rgba(49, 196, 149, 0.12)',
+                    border: '1px solid rgba(49, 196, 149, 0.25)',
+                    fontVariantNumeric: 'tabular-nums',
+                  }}
+                >
+                  {testFeedbackText}
+                </div>
+              )}
+            </div>
+
             <div className="ios-grouped-row">
               <div style={{ minWidth: 0 }}>
                 <div className="sheet-field-label">

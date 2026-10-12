@@ -138,4 +138,126 @@ export async function syncSystemNotifications(
   return { scheduledCount: prompts.length };
 }
 
+const TEST_NOTIFICATION_ID = 999001;
+const TEST_ALARM_FALLBACK_ID = 999002;
+
+function formatHHMMSS(date: Date): string {
+  const hh = String(date.getHours()).padStart(2, '0');
+  const mm = String(date.getMinutes()).padStart(2, '0');
+  const ss = String(date.getSeconds()).padStart(2, '0');
+  return `${hh}:${mm}:${ss}`;
+}
+
+/**
+ * Programa un aviso de prueba (notificación local) a +60 segundos desde ahora.
+ */
+export async function scheduleTestNotificationInOneMinute(
+  settings: GlobalSettings
+): Promise<{ targetDate: Date; targetTimeHHMMSS: string }> {
+  const targetDate = new Date(Date.now() + 60_000);
+  const targetTimeHHMMSS = formatHHMMSS(targetDate);
+
+  if (Capacitor.isNativePlatform()) {
+    try {
+      await LocalNotifications.cancel({
+        notifications: [{ id: TEST_NOTIFICATION_ID }],
+      });
+      await LocalNotifications.schedule({
+        notifications: [
+          {
+            id: TEST_NOTIFICATION_ID,
+            title: '🔔 Aviso de prueba · Rutinas',
+            body: `Notificación local programada para las ${targetTimeHHMMSS}.`,
+            schedule: {
+              at: targetDate,
+              allowWhileIdle: true,
+            },
+            actionTypeId: ACTION_TYPE_ROUTINE_DEFAULT,
+            extra: {
+              isDiagnosticTest: true,
+              kind: 'test_notification',
+              interruptionLevel: settings.useTimeSensitiveEntitlement
+                ? 'timeSensitive'
+                : 'active',
+            },
+          },
+        ],
+      });
+    } catch {
+      // Ignorar si falla en web
+    }
+  } else if (typeof window !== 'undefined' && 'Notification' in window) {
+    window.setTimeout(() => {
+      if (Notification.permission === 'granted') {
+        new Notification('🔔 Aviso de prueba · Rutinas', {
+          body: `Notificación local programada para las ${targetTimeHHMMSS}.`,
+        });
+      }
+    }, 60_000);
+  }
+
+  return { targetDate, targetTimeHHMMSS };
+}
+
+/**
+ * Programa una alarma de prueba a +60 segundos desde ahora.
+ * En la Fase 3 usará AlarmKit nativo en iOS 26; mientras tanto usa notificación local como respaldo.
+ */
+export async function scheduleTestAlarmInOneMinute(
+  settings: GlobalSettings
+): Promise<{
+  targetDate: Date;
+  targetTimeHHMMSS: string;
+  engine: 'alarmkit' | 'notification-fallback';
+}> {
+  const targetDate = new Date(Date.now() + 60_000);
+  const targetTimeHHMMSS = formatHHMMSS(targetDate);
+
+  if (Capacitor.isNativePlatform()) {
+    try {
+      await LocalNotifications.cancel({
+        notifications: [{ id: TEST_ALARM_FALLBACK_ID }],
+      });
+      await LocalNotifications.schedule({
+        notifications: [
+          {
+            id: TEST_ALARM_FALLBACK_ID,
+            title: '⏰ Alarma de prueba · Rutinas',
+            body: `Alarma de prueba programada para las ${targetTimeHHMMSS}.`,
+            schedule: {
+              at: targetDate,
+              allowWhileIdle: true,
+            },
+            actionTypeId: ACTION_TYPE_ROUTINE_DEFAULT,
+            extra: {
+              isDiagnosticTest: true,
+              kind: 'test_alarm',
+              interruptionLevel: settings.useTimeSensitiveEntitlement
+                ? 'timeSensitive'
+                : 'active',
+            },
+          },
+        ],
+      });
+    } catch {
+      // Ignorar si falla en web
+    }
+  } else if (typeof window !== 'undefined' && 'Notification' in window) {
+    window.setTimeout(() => {
+      if (Notification.permission === 'granted') {
+        new Notification('⏰ Alarma de prueba · Rutinas', {
+          body: `Alarma de prueba programada para las ${targetTimeHHMMSS}.`,
+        });
+      }
+    }, 60_000);
+  }
+
+  return {
+    targetDate,
+    targetTimeHHMMSS,
+    engine: 'notification-fallback',
+  };
+}
+
 // @end: Notification-Adapter
+
