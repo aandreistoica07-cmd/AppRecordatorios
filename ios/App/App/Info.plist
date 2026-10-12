@@ -47,5 +47,7 @@
 	</array>
 	<key>UIViewControllerBasedStatusBarAppearance</key>
 	<true/>
+	<key>NSAlarmKitUsageDescription</key>
+	<string>Rutinas necesita permiso para programar alarmas del sistema que suenen a su hora incluso con el modo silencio activado.</string>
 </dict>
 </plist>

@@ -9,6 +9,11 @@ import type {
   ScheduledPrompt,
   SystemNotificationPermissions,
 } from '../core/types';
+import {
+  getAlarmKitNativeStatus,
+  requestAlarmKitAuthorization,
+  scheduleAlarmKitAlarm,
+} from './alarmKitClient';
 import { getPreviouslyScheduledIds, saveScheduledIds } from './storage';
 
 export const ACTION_TYPE_ROUTINE_DEFAULT = 'ROUTINE_DEFAULT_ACTIONS';
@@ -54,57 +59,11 @@ function mapPermissionStateToLabel(state: unknown): PermissionGrantLabel {
  * Mientras no exista o no esté autorizado, devuelve `{ available: false, authorized: false }`.
  */
 export async function getAlarmKitStatus(): Promise<AlarmKitStatus> {
-  try {
-    if (
-      !Capacitor.isNativePlatform() ||
-      !Capacitor.isPluginAvailable('AlarmKit')
-    ) {
-      return { available: false, authorized: false };
-    }
-
-    const plugins = (
-      Capacitor as unknown as {
-        Plugins?: Record<
-          string,
-          {
-            checkPermissions?: () => Promise<Record<string, unknown>>;
-            isAuthorized?: () => Promise<Record<string, unknown>>;
-          }
-        >;
-      }
-    ).Plugins;
-
-    const alarmKitPlugin = plugins?.AlarmKit;
-    if (!alarmKitPlugin) {
-      return { available: true, authorized: false };
-    }
-
-    if (typeof alarmKitPlugin.checkPermissions === 'function') {
-      const res = await alarmKitPlugin.checkPermissions();
-      const rawStatus = String(
-        res?.alarm ?? res?.display ?? res?.status ?? ''
-      ).toLowerCase();
-      return {
-        available: true,
-        authorized:
-          rawStatus === 'granted' ||
-          rawStatus === 'authorized' ||
-          res?.authorized === true,
-      };
-    }
-
-    if (typeof alarmKitPlugin.isAuthorized === 'function') {
-      const res = await alarmKitPlugin.isAuthorized();
-      return {
-        available: true,
-        authorized: Boolean(res?.authorized ?? res?.value),
-      };
-    }
-
-    return { available: true, authorized: false };
-  } catch {
-    return { available: false, authorized: false };
-  }
+  const status = await getAlarmKitNativeStatus();
+  return {
+    available: status.available,
+    authorized: status.authorized,
+  };
 }
 
 /**
@@ -629,7 +588,6 @@ export async function syncSystemNotifications(
 }
 
 const TEST_NOTIFICATION_ID = 999001;
-const TEST_ALARM_FALLBACK_ID = 999002;
 
 function formatHHMMSS(date: Date): string {
   const hh = String(date.getHours()).padStart(2, '0');
@@ -700,72 +658,80 @@ export async function scheduleTestNotificationInOneMinute(
 }
 
 /**
- * Programa una alarma de prueba a +60 segundos desde ahora con sonido explícito y soporte en primer plano.
- * En la Fase 3 usará AlarmKit nativo en iOS 26; mientras tanto usa notificación local como respaldo.
+ * Programa una alarma de prueba a +60 segundos desde ahora usando el plugin nativo AlarmKit (Fase 3a).
+ * Devuelve el estado exacto del permiso (concedido o denegado), la hora programada, el UUID y el error exacto si falla.
  */
 export async function scheduleTestAlarmInOneMinute(
-  settings: GlobalSettings
+  _settings?: GlobalSettings
 ): Promise<{
+  ok: boolean;
   targetDate: Date;
   targetTimeHHMMSS: string;
   engine: 'alarmkit' | 'notification-fallback';
+  permissionGranted: boolean;
+  authorizationState: string;
+  alarmUuid?: string;
+  error?: string;
 }> {
   const targetDate = new Date(Date.now() + 60_000);
   const targetTimeHHMMSS = formatHHMMSS(targetDate);
-  const title = '⏰ Alarma de prueba · Rutinas';
-  const body = `Alarma de prueba programada para las ${targetTimeHHMMSS}.`;
 
-  if (Capacitor.isNativePlatform()) {
-    try {
-      await LocalNotifications.cancel({
-        notifications: [{ id: TEST_ALARM_FALLBACK_ID }],
-      });
-      await LocalNotifications.schedule({
-        notifications: [
-          {
-            id: TEST_ALARM_FALLBACK_ID,
-            title,
-            body,
-            sound: DEFAULT_NOTIFICATION_SOUND,
-            silent: false,
-            threadIdentifier: 'diagnostic-test',
-            group: 'diagnostic-test',
-            schedule: {
-              at: targetDate,
-              allowWhileIdle: true,
-            },
-            actionTypeId: ACTION_TYPE_ROUTINE_DEFAULT,
-            extra: {
-              isDiagnosticTest: true,
-              kind: 'test_alarm',
-              interruptionLevel: settings.useTimeSensitiveEntitlement
-                ? 'timeSensitive'
-                : 'active',
-            },
-          },
-        ],
-      });
-    } catch {
-      // Ignorar si falla en web
-    }
-  } else if (typeof window !== 'undefined') {
-    window.setTimeout(() => {
-      playForegroundChime();
-      foregroundNotifCallback?.({
-        id: TEST_ALARM_FALLBACK_ID,
-        title,
-        body,
-      });
-      if ('Notification' in window && Notification.permission === 'granted') {
-        new Notification(title, { body });
-      }
-    }, 60_000);
+  const authRes = await requestAlarmKitAuthorization();
+  if (!authRes.available) {
+    return {
+      ok: false,
+      targetDate,
+      targetTimeHHMMSS,
+      engine: 'alarmkit',
+      permissionGranted: false,
+      authorizationState: authRes.authorizationState,
+      error:
+        authRes.error ??
+        'AlarmKit no está disponible en este entorno (requiere iOS 26+).',
+    };
+  }
+
+  if (!authRes.authorized) {
+    return {
+      ok: false,
+      targetDate,
+      targetTimeHHMMSS,
+      engine: 'alarmkit',
+      permissionGranted: false,
+      authorizationState: authRes.authorizationState,
+      error:
+        authRes.error ??
+        `Permiso de AlarmKit denegado (estado: ${authRes.authorizationState}). Actívalo en Ajustes de iOS.`,
+    };
+  }
+
+  const schedRes = await scheduleAlarmKitAlarm({
+    id: 'diagnostic-test-alarm',
+    fechaISO: targetDate.toISOString(),
+    etiqueta: 'Alarma de prueba · Rutinas',
+  });
+
+  if (!schedRes.ok) {
+    return {
+      ok: false,
+      targetDate,
+      targetTimeHHMMSS,
+      engine: 'alarmkit',
+      permissionGranted: true,
+      authorizationState: schedRes.authorizationState,
+      alarmUuid: schedRes.uuid,
+      error: schedRes.error ?? 'Error desconocido al programar en AlarmKit.',
+    };
   }
 
   return {
+    ok: true,
     targetDate,
     targetTimeHHMMSS,
-    engine: 'notification-fallback',
+    engine: 'alarmkit',
+    permissionGranted: true,
+    authorizationState: schedRes.authorizationState,
+    alarmUuid: schedRes.uuid,
   };
 }
 

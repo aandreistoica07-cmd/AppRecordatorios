@@ -1,0 +1,29 @@
+{
+  "name": "alarmkit-plugin",
+  "version": "1.0.0",
+  "description": "Minimal Capacitor 7 iOS 26 AlarmKit plugin for Rutinas",
+  "main": "index.js",
+  "files": [
+    "ios/Sources",
+    "Package.swift",
+    "AlarmKitPlugin.podspec",
+    "index.js"
+  ],
+  "author": "Rutinas",
+  "license": "MIT",
+  "keywords": [
+    "capacitor",
+    "plugin",
+    "native",
+    "ios",
+    "alarmkit"
+  ],
+  "peerDependencies": {
+    "@capacitor/core": ">=7.0.0"
+  },
+  "capacitor": {
+    "ios": {
+      "src": "ios"
+    }
+  }
+}

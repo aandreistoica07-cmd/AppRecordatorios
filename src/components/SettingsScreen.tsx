@@ -33,6 +33,7 @@ interface SettingsScreenProps {
   activeScheduledPrompts: ScheduledPrompt[];
   onUpdateSettings: (next: GlobalSettings) => void;
   onRequestPermissions: () => void;
+  onRefreshPermissions?: () => void;
   onMarkSideloadReinstalled: () => void;
 }
 
@@ -44,11 +45,13 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
   activeScheduledPrompts,
   onUpdateSettings,
   onRequestPermissions,
+  onRefreshPermissions,
   onMarkSideloadReinstalled,
 }) => {
   const [showSleepPicker, setShowSleepPicker] = useState(false);
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
   const [testFeedbackText, setTestFeedbackText] = useState<string | null>(null);
+  const [testFeedbackError, setTestFeedbackError] = useState<boolean>(false);
 
   const derivedMinoxidilHHMM = resolveRoutinePrimaryHHMM(
     {
@@ -370,6 +373,7 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
                 onClick={async () => {
                   void triggerLightHaptic();
                   const res = await scheduleTestNotificationInOneMinute(settings);
+                  setTestFeedbackError(false);
                   setTestFeedbackText(
                     `Aviso de prueba programado: sonará a las ${res.targetTimeHHMMSS}`
                   );
@@ -386,9 +390,25 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
                 onClick={async () => {
                   void triggerLightHaptic();
                   const res = await scheduleTestAlarmInOneMinute(settings);
-                  setTestFeedbackText(
-                    `Alarma de prueba programada: sonará a las ${res.targetTimeHHMMSS}`
-                  );
+                  onRefreshPermissions?.();
+                  const permLabel = res.permissionGranted
+                    ? `Concedido (${res.authorizationState})`
+                    : `Denegado / No disponible (${res.authorizationState})`;
+                  if (res.ok) {
+                    setTestFeedbackError(false);
+                    setTestFeedbackText(
+                      `AlarmKit OK · Permiso: ${permLabel} · Sonará a las ${res.targetTimeHHMMSS} (UUID: ${
+                        res.alarmUuid?.slice(0, 8) ?? 'n/a'
+                      })`
+                    );
+                  } else {
+                    setTestFeedbackError(true);
+                    setTestFeedbackText(
+                      `AlarmKit falló · Permiso: ${permLabel} · Hora objetivo: ${
+                        res.targetTimeHHMMSS
+                      } · Error: ${res.error ?? 'Desconocido'}`
+                    );
+                  }
                 }}
               >
                 <Icon name="SpeakerHigh" size={18} weight="fill" />
@@ -401,13 +421,20 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
                   style={{
                     fontSize: '13px',
                     fontWeight: 600,
-                    color: 'var(--accent-emerald)',
-                    textAlign: 'center',
-                    padding: '6px 10px',
+                    color: testFeedbackError
+                      ? '#fca5a5'
+                      : 'var(--accent-emerald)',
+                    textAlign: 'left',
+                    padding: '8px 12px',
                     borderRadius: '12px',
-                    background: 'rgba(49, 196, 149, 0.12)',
-                    border: '1px solid rgba(49, 196, 149, 0.25)',
+                    background: testFeedbackError
+                      ? 'rgba(239, 68, 68, 0.14)'
+                      : 'rgba(49, 196, 149, 0.12)',
+                    border: testFeedbackError
+                      ? '1px solid rgba(248, 113, 113, 0.35)'
+                      : '1px solid rgba(49, 196, 149, 0.25)',
                     fontVariantNumeric: 'tabular-nums',
+                    overflowWrap: 'break-word',
                   }}
                 >
                   {testFeedbackText}

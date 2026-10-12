@@ -18,6 +18,7 @@
     "@capacitor/status-bar": "^7.0.6",
     "@fontsource/plus-jakarta-sans": "^5.3.0",
     "@phosphor-icons/react": "^2.1.10",
+    "alarmkit-plugin": "file:plugins/alarmkit",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
   },

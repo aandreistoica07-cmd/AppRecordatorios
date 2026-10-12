@@ -80,7 +80,9 @@ jobs:
           cd ios/App && pod install
 
       - name: Archive iOS App without code signing
+        shell: bash
         run: |
+          set -o pipefail
           xcodebuild archive \
             -workspace ios/App/App.xcworkspace \
             -scheme App \
@@ -92,7 +94,28 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGNING_ALLOWED=NO \
             AD_HOC_CODE_SIGNING_ALLOWED=YES \
-            COMPILER_INDEX_STORE_ENABLE=NO
+            COMPILER_INDEX_STORE_ENABLE=NO 2>&1 | tee "$GITHUB_WORKSPACE/xcodebuild.log"
+          echo "=== Últimas 80 líneas de xcodebuild.log ==="
+          tail -n 80 "$GITHUB_WORKSPACE/xcodebuild.log"
+
+      - name: Show tail of xcodebuild.log on failure
+        if: failure()
+        run: |
+          if [ -f "$GITHUB_WORKSPACE/xcodebuild.log" ]; then
+            echo "=== ERRORES DETECTADOS EN XCODEBUILD ==="
+            grep -E "error:|fatal error:|warning:.*AlarmKit" "$GITHUB_WORKSPACE/xcodebuild.log" || true
+            echo "=== ÚLTIMAS 120 LÍNEAS DE XCODEBUILD.LOG ==="
+            tail -n 120 "$GITHUB_WORKSPACE/xcodebuild.log"
+          fi
+
+      - name: Upload xcodebuild.log artifact (always)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xcodebuild-log
+          path: xcodebuild.log
+          retention-days: 14
+          if-no-files-found: ignore
 
       - name: Package unsigned .ipa (Payload folder) & verify unique Bundle IDs
         run: |

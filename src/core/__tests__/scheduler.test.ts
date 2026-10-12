@@ -26,7 +26,19 @@ import {
   CURRENT_SCHEMA_VERSION,
   migrateAndSanitizeState,
 } from '../../services/storage';
+import {
+  cancelAlarmKitAlarm,
+  getAlarmKitNativeStatus,
+  getJsIdMapping,
+  isAlarmKitPluginAvailable,
+  listAlarmKitAlarms,
+  requestAlarmKitAuthorization,
+  scheduleAlarmKitAlarm,
+  toAlarmKitUuidAndSaveMapping,
+} from '../../services/alarmKitClient';
 import type { ActiveNoticeMode, GlobalSettings, RoutineDayRecord } from '../types';
+
+
 
 describe('Motor puro de rutinas, bloqueos 24h, posposición y modos', () => {
   it('(1) Bloqueo del dermastamp: cancela SOLO las alarmas dentro de las 24 h exactas desde la hora real de marcado, NO el día natural entero', () => {
@@ -1355,6 +1367,77 @@ describe('Motor puro de rutinas, bloqueos 24h, posposición y modos', () => {
       new Date(reinstallDate.getTime() + 6 * 24 * 3600_000).toISOString()
     );
   });
+
+  it('(21) AlarmKit wrapper: conversión determinista de ID de la app a UUID RFC-4122 y persistencia de la correspondencia', () => {
+    const store = new Map<string, string>();
+    const prevLocalStorage = (globalThis as Record<string, unknown>).localStorage;
+    (globalThis as Record<string, unknown>).localStorage = {
+      getItem: (k: string) => store.get(k) ?? null,
+      setItem: (k: string, v: string) => {
+        store.set(k, v);
+      },
+      removeItem: (k: string) => {
+        store.delete(k);
+      },
+    };
+
+    try {
+      const uuidA1 = toAlarmKitUuidAndSaveMapping('diag-test-alarm');
+      const uuidA2 = toAlarmKitUuidAndSaveMapping('diag-test-alarm');
+      const uuidB = toAlarmKitUuidAndSaveMapping('minoxidil:2026-10-12:primary:0');
+
+      // Es determinista (mismo ID -> mismo UUID) y distinto para IDs distintos
+      expect(uuidA1).toBe(uuidA2);
+      expect(uuidA1).not.toBe(uuidB);
+
+      // Cumple formato UUID RFC-4122 (8-4-4-4-12 hex con versión 5 y variante 8/9/a/b)
+      expect(uuidA1).toMatch(
+        /^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
+      );
+
+      // Persistencia de correspondencia id <-> UUID
+      const mapAfterSave = getJsIdMapping();
+      expect(mapAfterSave['diag-test-alarm']).toBe(uuidA1);
+      expect(mapAfterSave['minoxidil:2026-10-12:primary:0']).toBe(uuidB);
+    } finally {
+      (globalThis as Record<string, unknown>).localStorage = prevLocalStorage;
+    }
+  });
+
+  it('(22) AlarmKit wrapper en entorno web/sin plugin nativo: fallback seguro sin romper la app', async () => {
+    // En entorno de test (Node/web), Capacitor.isPluginAvailable('AlarmKit') es false
+    expect(isAlarmKitPluginAvailable()).toBe(false);
+
+    const statusRes = await getAlarmKitNativeStatus();
+    expect(statusRes.available).toBe(false);
+    expect(statusRes.authorized).toBe(false);
+    expect(statusRes.authorizationState).toBe('unavailable');
+
+    const authRes = await requestAlarmKitAuthorization();
+    expect(authRes.available).toBe(false);
+    expect(authRes.authorized).toBe(false);
+    expect(authRes.authorizationState).toBe('unavailable');
+
+    const schedRes = await scheduleAlarmKitAlarm({
+      id: 'diag-test-alarm',
+      fechaISO: '2026-10-12T22:00:00.000Z',
+      etiqueta: 'Alarma de prueba',
+    });
+    expect(schedRes.ok).toBe(false);
+    expect(schedRes.scheduled).toBe(false);
+    expect(schedRes.authorizationState).toBe('unavailable');
+    expect(schedRes.error).toContain('no disponible');
+
+    const cancelRes = await cancelAlarmKitAlarm({ id: 'diag-test-alarm' });
+    expect(cancelRes.ok).toBe(false);
+    expect(cancelRes.cancelled).toBe(false);
+
+    const listRes = await listAlarmKitAlarms();
+    expect(listRes.ok).toBe(false);
+    expect(listRes.alarms).toEqual([]);
+  });
 });
 
 // @end: Unit-Tests-Scheduler
+
+

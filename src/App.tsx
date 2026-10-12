@@ -811,6 +811,10 @@ export const App: React.FC = () => {
             const res = await requestNotificationPermissions();
             setPermissionDetails(res.details);
             setPermissionStatus(res.status);
+            void refreshPermissionState();
+          }}
+          onRefreshPermissions={() => {
+            void refreshPermissionState();
           }}
           onMarkSideloadReinstalled={handleMarkSideloadReinstalled}
         />
