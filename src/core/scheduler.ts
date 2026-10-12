@@ -960,45 +960,167 @@ export function computeCurrentStreakDays(
   return streak;
 }
 
+export interface DueProgressSummary {
+  /** Porcentaje de cumplimiento sobre alarmas ya vencidas (0..100) */
+  percentage: number;
+  /** Tareas ya vencidas que están completadas (o adelantadas completadas) */
+  completedDueCount: number;
+  /** Total de tareas del día cuya hora de alarma ya ha vencido (o ya se completaron) */
+  totalDueCount: number;
+  /** Total de tareas del día aún futuras y pendientes */
+  upcomingFutureCount: number;
+  /** Tareas omitidas por bloqueo (no cuentan como fallo) */
+  omittedCount: number;
+}
+
 /**
- * Calcula el porcentaje de cumplimiento de los últimos 7 días (excluyendo tareas pendientes de hoy).
- * IMPORTANTE: Las tareas "omitidas por dermastamp" (`omitted_by_block`) NO cuentan como fallo
- * en el porcentaje de cumplimiento (se excluyen del denominador de fallos).
+ * Calcula el recuento "Hechas X/Y" y el porcentaje de cumplimiento del día en curso `now`.
+ * Regla crítica:
+ * - Solo cuenta en el denominador (`totalDueCount`) las alarmas cuya hora YA ha vencido (`primaryDate <= now`)
+ *   o aquellas que el usuario ya haya completado por adelantado.
+ * - Las alarmas futuras (hora aún no llegada y pendientes) NUNCA cuentan como pendiente vencida ni restan porcentaje.
+ * - Con 2 hechas de 2 vencidas hoy (aunque quede 1 futura a las 22:00), devuelve `completedDueCount = 2`, `totalDueCount = 2`, `percentage = 100`.
  */
-export function computeWeeklyCompliancePercentage(
-  todayKey: string,
+export function computeDueProgressForDay(
+  now: Date,
   routines: RoutineConfig[],
   records: RoutineDayRecord[],
   blockingRules: BlockingRule[],
   settings: GlobalSettings
-): { percentage: number; completedCount: number; evaluableCount: number; omittedCount: number } {
+): DueProgressSummary {
+  const todayKey = formatDateKey(now);
+  const nowMs = now.getTime();
+  const applicable = routines.filter((r) =>
+    doesRoutineApplyOnDate(r, todayKey)
+  );
+
+  let completedDueCount = 0;
+  let totalDueCount = 0;
+  let upcomingFutureCount = 0;
+  let omittedCount = 0;
+
+  for (const routine of applicable) {
+    const existing = records.find(
+      (r) => r.routineId === routine.id && r.dateKey === todayKey
+    );
+    const primaryDate = resolveRoutinePrimaryDate(routine, todayKey, settings);
+    const isDue = primaryDate.getTime() <= nowMs;
+
+    if (existing?.status === 'completed') {
+      completedDueCount++;
+      totalDueCount++;
+      continue;
+    }
+
+    const blockCheck = findActiveBlockForTimestamp(
+      routine.id,
+      primaryDate,
+      blockingRules,
+      records
+    );
+    if (
+      existing?.status === 'omitted_by_block' ||
+      (blockCheck.blocked && blockCheck.rule)
+    ) {
+      omittedCount++;
+      continue;
+    }
+
+    if (isDue) {
+      // Ya venció la hora de su alarma y aún no está completada
+      totalDueCount++;
+    } else {
+      // Aún es futura: no penaliza ni entra en el denominador de vencidas
+      upcomingFutureCount++;
+    }
+  }
+
+  const percentage =
+    totalDueCount === 0
+      ? 100
+      : Math.round((completedDueCount / totalDueCount) * 100);
+
+  return {
+    percentage,
+    completedDueCount,
+    totalDueCount,
+    upcomingFutureCount,
+    omittedCount,
+  };
+}
+
+/**
+ * Calcula el porcentaje de cumplimiento de los últimos 7 días contando SOLO alarmas ya vencidas (hora pasada),
+ * nunca las futuras.
+ * IMPORTANTE: Las tareas "omitidas por dermastamp" (`omitted_by_block`) NO cuentan como fallo
+ * en el porcentaje de cumplimiento (se excluyen del denominador de fallos).
+ */
+export function computeWeeklyCompliancePercentage(
+  todayKeyOrNow: string | Date,
+  routines: RoutineConfig[],
+  records: RoutineDayRecord[],
+  blockingRules: BlockingRule[],
+  settings: GlobalSettings
+): {
+  percentage: number;
+  completedCount: number;
+  evaluableCount: number;
+  omittedCount: number;
+} {
+  const nowDate =
+    typeof todayKeyOrNow === 'string'
+      ? buildDateFromKeyAndHHMM(todayKeyOrNow, '23:59')
+      : todayKeyOrNow;
+  const todayKey = formatDateKey(nowDate);
+  const nowMs = nowDate.getTime();
+
   let completedCount = 0;
   let evaluableCount = 0;
   let omittedCount = 0;
 
   for (let i = 0; i < 7; i++) {
     const key = addDaysToDateKey(todayKey, -i);
-    const summary = evaluateDaySummary(
-      key,
-      todayKey,
-      routines,
-      records,
-      blockingRules,
-      settings
-    );
 
-    for (const item of summary.routineStatuses) {
-      if (item.status === 'omitted_by_block') {
-        omittedCount++;
-        // No cuenta como fallo en el porcentaje de cumplimiento
+    // Para días anteriores a hoy (i > 0), solo evaluar si ya existía actividad en o antes de esa fecha
+    // (evita contar como fallos los días previos a que el usuario empezara a usar la app).
+    if (i > 0) {
+      const hasHistoryOnOrBefore = records.some((r) => r.dateKey <= key);
+      if (!hasHistoryOnOrBefore) {
         continue;
       }
-      if (item.status === 'pending') {
-        continue;
-      }
-      evaluableCount++;
-      if (item.status === 'completed') {
+    }
+
+    const applicable = routines.filter((r) => doesRoutineApplyOnDate(r, key));
+
+    for (const routine of applicable) {
+      const existing = records.find(
+        (r) => r.routineId === routine.id && r.dateKey === key
+      );
+      const primaryDate = resolveRoutinePrimaryDate(routine, key, settings);
+
+      if (existing?.status === 'completed') {
+        evaluableCount++;
         completedCount++;
+        continue;
+      }
+
+      const blockCheck = findActiveBlockForTimestamp(
+        routine.id,
+        primaryDate,
+        blockingRules,
+        records
+      );
+      if (
+        existing?.status === 'omitted_by_block' ||
+        (blockCheck.blocked && blockCheck.rule)
+      ) {
+        omittedCount++;
+        continue;
+      }
+
+      // Solo cuenta como alarma evaluable vencida si su hora ya ha pasado respecto a `nowDate`
+      if (primaryDate.getTime() <= nowMs) {
+        evaluableCount++;
       }
     }
   }
@@ -1014,6 +1136,66 @@ export function computeWeeklyCompliancePercentage(
     evaluableCount,
     omittedCount,
   };
+}
+
+const SHORT_WEEKDAYS_LOWER = ['dom', 'lun', 'mar', 'mié', 'jue', 'vie', 'sáb'];
+const SHORT_MONTHS_LOWER = [
+  'ene',
+  'feb',
+  'mar',
+  'abr',
+  'may',
+  'jun',
+  'jul',
+  'ago',
+  'sep',
+  'oct',
+  'nov',
+  'dic',
+];
+const FULL_MONTHS_ES = [
+  'Enero',
+  'Febrero',
+  'Marzo',
+  'Abril',
+  'Mayo',
+  'Junio',
+  'Julio',
+  'Agosto',
+  'Septiembre',
+  'Octubre',
+  'Noviembre',
+  'Diciembre',
+];
+
+/**
+ * Formatea una fecha `YYYY-MM-DD` de forma relativa a `todayKey`:
+ * - `"Hoy"`
+ * - `"Mañana"`
+ * - `"Ayer"`
+ * - `"mié 14 oct"`
+ */
+export function formatRelativeDateLabel(
+  dateKey: string,
+  todayKey: string
+): string {
+  if (dateKey === todayKey) return 'Hoy';
+  if (dateKey === addDaysToDateKey(todayKey, 1)) return 'Mañana';
+  if (dateKey === addDaysToDateKey(todayKey, -1)) return 'Ayer';
+
+  const dt = buildDateFromKeyAndHHMM(dateKey, '12:00');
+  const w = SHORT_WEEKDAYS_LOWER[dt.getDay()];
+  const d = dt.getDate();
+  const m = SHORT_MONTHS_LOWER[dt.getMonth()];
+  return `${w} ${d} ${m}`;
+}
+
+/**
+ * Formatea mes y año como `"Octubre de 2026"` (preposición `"de"` siempre en minúscula).
+ */
+export function formatMonthYearEs(year: number, monthZeroIndexed: number): string {
+  const monthName = FULL_MONTHS_ES[monthZeroIndexed] ?? 'Octubre';
+  return `${monthName} de ${year}`;
 }
 
 // @end: Scheduler-History-And-Streaks

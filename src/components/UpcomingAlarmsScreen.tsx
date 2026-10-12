@@ -1,85 +1,162 @@
-// @section: Screen-Upcoming-7Days
+// @section: Upcoming-Alarms-Screen
 
 import React from 'react';
-import { formatHHMM } from '../core/scheduler';
+import {
+  formatDateKey,
+  formatHHMM,
+  formatRelativeDateLabel,
+} from '../core/scheduler';
 import type { ScheduledPrompt } from '../core/types';
+import { Icon } from './Icon';
+import { getRoutineTheme } from './routineTheme';
 
 interface UpcomingAlarmsScreenProps {
+  now: Date;
   upcomingOverview: ScheduledPrompt[];
-  activeScheduledPrompts: ScheduledPrompt[];
+  onOpenSettingsTab?: () => void;
 }
 
 export const UpcomingAlarmsScreen: React.FC<UpcomingAlarmsScreenProps> = ({
+  now,
   upcomingOverview,
-  activeScheduledPrompts,
+  onOpenSettingsTab,
 }) => {
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
-      <header className="screen-header">
-        <div>
-          <h1 className="screen-title">Próximas 7 días</h1>
-          <p className="routine-subtext">
-            {activeScheduledPrompts.length} avisos activos en cola del sistema
-          </p>
-        </div>
-      </header>
+  const todayKey = formatDateKey(now);
+  const nowMs = now.getTime();
 
-      {upcomingOverview.map((item) => {
-        const dt = new Date(item.scheduledAtISO);
-        const hhmm = formatHHMM(dt.getHours(), dt.getMinutes());
-        return (
-          <div
-            key={item.deterministicId}
-            className={`clock-card ${item.blocked ? 'omitted' : ''}`}
-            style={{ padding: '18px 20px' }}
-          >
-            <div className="clock-card-top">
-              <div>
-                <div className="routine-subtext">{item.dateKey}</div>
-                <div className="time-huge" style={{ fontSize: '2.35rem' }}>
-                  {hhmm}
-                </div>
-                <div className="routine-label">{item.routineName}</div>
+  // Filtrar las alarmas de hoy cuya hora ya haya pasado y agrupar por dateKey
+  const groupedByDate = React.useMemo(() => {
+    const groups: { dateKey: string; items: ScheduledPrompt[] }[] = [];
+    for (const item of upcomingOverview) {
+      const scheduledMs = new Date(item.scheduledAtISO).getTime();
+      if (item.dateKey === todayKey && scheduledMs <= nowMs) {
+        continue;
+      }
+
+      const last = groups[groups.length - 1];
+      if (!last || last.dateKey !== item.dateKey) {
+        groups.push({ dateKey: item.dateKey, items: [item] });
+      } else {
+        last.items.push(item);
+      }
+    }
+    return groups;
+  }, [upcomingOverview, todayKey, nowMs]);
+
+  return (
+    <div className="bevel-today">
+      <div className="bevel-top-actions">
+        <div className="circle-outline-btn" style={{ cursor: 'default' }}>
+          <Icon name="BellRinging" size={24} weight="bold" />
+        </div>
+        <button
+          type="button"
+          className="circle-outline-btn"
+          title="Ajustes"
+          onClick={() => onOpenSettingsTab?.()}
+        >
+          <Icon name="DotsThree" size={24} weight="bold" />
+        </button>
+      </div>
+
+      <div className="bevel-screen-title-row">
+        <h1 className="bevel-main-title">Próximas</h1>
+      </div>
+
+      {groupedByDate.length === 0 ? (
+        <div className="bevel-empty-dashed-box">
+          <Icon name="CheckCircle" size={28} weight="fill" color="#27d3af" />
+          <span>No hay alarmas pendientes en los próximos 7 días</span>
+        </div>
+      ) : (
+        groupedByDate.map((group) => {
+          const sectionTitle = formatRelativeDateLabel(group.dateKey, todayKey);
+          return (
+            <section
+              key={group.dateKey}
+              style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}
+              aria-label={`Alarmas de ${sectionTitle}`}
+            >
+              <div className="bevel-section-header" style={{ marginTop: '2px' }}>
+                <h2 className="bevel-day-group-title">{sectionTitle}</h2>
               </div>
-              <div
-                style={{
-                  display: 'flex',
-                  flexDirection: 'column',
-                  alignItems: 'flex-end',
-                  gap: 6,
-                }}
-              >
-                {item.blocked ? (
-                  <span className="badge-accent">
-                    🚫 Bloqueado ({item.blockedReason})
-                  </span>
-                ) : (
-                  <span className="badge-muted">
-                    {item.channel === 'alarmkit'
-                      ? '🔊 Alarma'
-                      : '🔕 Notificación discreta'}
-                  </span>
-                )}
-                <span
-                  className="routine-subtext"
-                  style={{ fontSize: '0.75rem', fontFamily: 'monospace' }}
-                >
-                  ID #{item.notificationNumericId}
-                </span>
+
+              <div className="bevel-routine-cards-stack">
+                {group.items.map((item) => {
+                  const dt = new Date(item.scheduledAtISO);
+                  const hhmm = formatHHMM(dt.getHours(), dt.getMinutes());
+                  const theme = getRoutineTheme(item.routineId);
+                  const isAfternoonPill = item.kind === 'secondary_primary';
+
+                  return (
+                    <div
+                      key={item.deterministicId}
+                      className={`bevel-routine-row-card ${
+                        item.blocked ? 'is-blocked-dashed' : ''
+                      }`}
+                    >
+                      <div className="bevel-row-top">
+                        <div className="bevel-row-left">
+                          <div
+                            className="bevel-routine-orb"
+                            style={{
+                              background: theme.orbGradient,
+                              boxShadow: theme.orbShadow,
+                              opacity: item.blocked ? 0.55 : 1,
+                            }}
+                          >
+                            <Icon
+                              name={theme.iconName}
+                              size={26}
+                              weight="fill"
+                              color="#ffffff"
+                            />
+                          </div>
+
+                          <div style={{ minWidth: 0 }}>
+                            <div className="bevel-routine-name">
+                              {item.routineName}
+                            </div>
+                            {item.blocked ? (
+                              <div className="blocked-tag-pill">
+                                <Icon
+                                  name="ShieldCheck"
+                                  size={15}
+                                  weight="fill"
+                                  color="#c4b5fd"
+                                />
+                                <span>Bloqueado por dermastamp</span>
+                              </div>
+                            ) : (
+                              <div className="bevel-routine-sub">
+                                {isAfternoonPill
+                                  ? 'Solo si no la has tomado'
+                                  : item.channel === 'alarmkit'
+                                  ? 'Alarma principal'
+                                  : 'Modo discreto'}
+                              </div>
+                            )}
+                          </div>
+                        </div>
+
+                        <div
+                          className={`upcoming-big-time ${
+                            item.blocked ? 'is-strikethrough' : ''
+                          }`}
+                        >
+                          {hhmm}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
-            </div>
-            {item.blocked && item.blockedByCompletedAtISO && (
-              <div className="routine-subtext">
-                Cancelada automáticamente por marcado dentro de las 24h previas (
-                {new Date(item.blockedByCompletedAtISO).toLocaleString('es-ES')}
-                ).
-              </div>
-            )}
-          </div>
-        );
-      })}
+            </section>
+          );
+        })
+      )}
     </div>
   );
 };
 
-// @end: Screen-Upcoming-7Days
+// @end: Upcoming-Alarms-Screen

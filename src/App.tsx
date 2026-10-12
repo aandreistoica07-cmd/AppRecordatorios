@@ -2,6 +2,7 @@
 
 import React, { useEffect, useState } from 'react';
 import { HistoryScreen } from './components/HistoryScreen';
+import { Icon } from './components/Icon';
 import { RoutinesScreen } from './components/RoutinesScreen';
 import { SettingsScreen } from './components/SettingsScreen';
 import { TodayScreen } from './components/TodayScreen';
@@ -14,6 +15,7 @@ import {
 import {
   computeCurrentStreakDays,
   computeSchedule,
+  evaluateDaySummary,
   formatDateKey,
   markRoutineDone,
   postponeRoutineNotAtHome,
@@ -27,6 +29,11 @@ import type {
   RoutineDayRecord,
 } from './core/types';
 import {
+  configureNativeStatusBar,
+  triggerLightHaptic,
+  triggerSuccessHaptic,
+} from './services/deviceBridge';
+import {
   registerNotificationCategories,
   requestNotificationPermissions,
   syncSystemNotifications,
@@ -36,7 +43,19 @@ import { loadAppState, saveAppState } from './services/storage';
 type TabKey = 'today' | 'routines' | 'upcoming' | 'history' | 'settings';
 
 export const App: React.FC = () => {
-  const [activeTab, setActiveTab] = useState<TabKey>('today');
+  const [activeTab, setActiveTab] = useState<TabKey>(() => {
+    const param = new URLSearchParams(window.location.search).get('tab');
+    if (
+      param === 'today' ||
+      param === 'routines' ||
+      param === 'upcoming' ||
+      param === 'history' ||
+      param === 'settings'
+    ) {
+      return param;
+    }
+    return 'today';
+  });
   const [now, setNow] = useState<Date>(() => new Date());
   const [hydrated, setHydrated] = useState(false);
 
@@ -55,11 +74,14 @@ export const App: React.FC = () => {
   });
   const [permissionStatus, setPermissionStatus] = useState<string>('Pendiente');
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const [externalModeSheetOpen, setExternalModeSheetOpen] =
+    useState<boolean>(false);
 
-  // Cargar datos de @capacitor/preferences al abrir la app
+  // Cargar datos de @capacitor/preferences y configurar StatusBar al abrir la app
   useEffect(() => {
     let mounted = true;
     (async () => {
+      await configureNativeStatusBar();
       await registerNotificationCategories();
       const loaded = await loadAppState();
       if (!mounted) return;
@@ -157,18 +179,39 @@ export const App: React.FC = () => {
     setTimeout(() => setToastMessage(null), 3200);
   };
 
-  const upsertRecord = (nextRecord: RoutineDayRecord) => {
-    setRecords((prev) => {
-      const idx = prev.findIndex(
-        (r) =>
-          r.routineId === nextRecord.routineId &&
-          r.dateKey === nextRecord.dateKey
+  const upsertRecordAndCheckCompletion = (
+    nextRecord: RoutineDayRecord,
+    dateKey: string
+  ) => {
+    const idx = records.findIndex(
+      (r) =>
+        r.routineId === nextRecord.routineId &&
+        r.dateKey === nextRecord.dateKey
+    );
+    const nextRecords =
+      idx === -1
+        ? [...records, nextRecord]
+        : records.map((r, i) => (i === idx ? nextRecord : r));
+
+    setRecords(nextRecords);
+
+    if (nextRecord.status === 'completed') {
+      const summary = evaluateDaySummary(
+        dateKey,
+        formatDateKey(now),
+        routines,
+        nextRecords,
+        blockingRules,
+        settings
       );
-      if (idx === -1) return [...prev, nextRecord];
-      const copy = [...prev];
-      copy[idx] = nextRecord;
-      return copy;
-    });
+      if (summary.overallStatus === 'completed') {
+        void triggerSuccessHaptic();
+      } else {
+        void triggerLightHaptic();
+      }
+    } else {
+      void triggerLightHaptic();
+    }
   };
 
   const handleMarkDone = (routine: RoutineConfig, dateKey: string) => {
@@ -180,7 +223,7 @@ export const App: React.FC = () => {
       showToast(res.error);
       return;
     }
-    upsertRecord(res.record);
+    upsertRecordAndCheckCompletion(res.record, dateKey);
     showToast(`✓ ${routine.name} marcado como Hecho. Alarmas del día canceladas.`);
   };
 
@@ -203,7 +246,7 @@ export const App: React.FC = () => {
       showToast(res.error);
       return;
     }
-    upsertRecord(res.record);
+    upsertRecordAndCheckCompletion(res.record, dateKey);
     if (res.record.status === 'completed') {
       showToast(
         `✓ ${routine.name} completado. Bloqueo de 24h activado para tareas dependientes.`
@@ -216,7 +259,18 @@ export const App: React.FC = () => {
       (r) => r.routineId === routine.id && r.dateKey === dateKey
     );
     const res = postponeRoutineNotAtHome(routine, existing, dateKey, new Date());
-    upsertRecord(res.record);
+    void triggerLightHaptic();
+    setRecords((prev) => {
+      const idx = prev.findIndex(
+        (r) =>
+          r.routineId === res.record.routineId &&
+          r.dateKey === res.record.dateKey
+      );
+      if (idx === -1) return [...prev, res.record];
+      const copy = [...prev];
+      copy[idx] = res.record;
+      return copy;
+    });
     showToast(
       res.reachedCap
         ? `Pospuesto al límite máximo de las ${res.nextTimeHHMM}.`
@@ -262,19 +316,28 @@ export const App: React.FC = () => {
     settings
   );
 
+  const shellThemeClass =
+    activeTab === 'routines'
+      ? 'theme-routines'
+      : activeTab === 'upcoming'
+      ? 'theme-upcoming'
+      : activeTab === 'history'
+      ? 'theme-history'
+      : activeTab === 'settings'
+      ? 'theme-settings'
+      : '';
+
   return (
-    <div className="app-shell">
+    <div className={`app-shell ${shellThemeClass}`}>
       {toastMessage && (
-        <div
-          className="mode-banner"
-          style={{
-            position: 'sticky',
-            top: 12,
-            zIndex: 60,
-            background: '#1c1c1e',
-          }}
-        >
-          <strong style={{ color: 'var(--accent)' }}>{toastMessage}</strong>
+        <div className="floating-toast" role="status">
+          <Icon
+            name="CheckCircle"
+            size={20}
+            weight="fill"
+            color="var(--color-pastilla)"
+          />
+          <span>{toastMessage}</span>
         </div>
       )}
 
@@ -287,6 +350,9 @@ export const App: React.FC = () => {
           settings={settings}
           effectiveMode={scheduleResult.effectiveMode}
           streakDays={streakDays}
+          externalModeSheetOpen={externalModeSheetOpen}
+          onCloseExternalModeSheet={() => setExternalModeSheetOpen(false)}
+          onOpenSettingsTab={() => setActiveTab('settings')}
           onMarkDone={handleMarkDone}
           onToggleChecklistStep={handleToggleChecklistStep}
           onPostponeNotAtHome={handlePostponeNotAtHome}
@@ -324,6 +390,25 @@ export const App: React.FC = () => {
             setRoutines((prev) =>
               prev.map((r) => (r.id === updated.id ? updated : r))
             );
+            // Fuente única de verdad: sincronizar horarios en settings
+            if (updated.id === 'pastilla') {
+              setSettings((prev) => ({
+                ...prev,
+                pillMorningTimeHHMM:
+                  updated.fixedTimeHHMM ?? prev.pillMorningTimeHHMM,
+                pillAfternoonTimeHHMM:
+                  updated.secondarySchedule?.timeHHMM ??
+                  prev.pillAfternoonTimeHHMM,
+              }));
+            } else if (updated.id === 'dermastamp') {
+              setSettings((prev) => ({
+                ...prev,
+                dermastampWeekday:
+                  updated.weekday ?? prev.dermastampWeekday,
+                dermastampTimeHHMM:
+                  updated.fixedTimeHHMM ?? prev.dermastampTimeHHMM,
+              }));
+            }
             showToast(`Rutina "${updated.name}" actualizada.`);
           }}
           onAddRoutine={(newR) => {
@@ -334,6 +419,12 @@ export const App: React.FC = () => {
             setBlockingRules((prev) => [...prev, newRule]);
             showToast('Regla de bloqueo añadida.');
           }}
+          onUpdateBlockingRule={(updatedRule) => {
+            setBlockingRules((prev) =>
+              prev.map((r) => (r.id === updatedRule.id ? updatedRule : r))
+            );
+            showToast('Regla de bloqueo actualizada.');
+          }}
           onDeleteBlockingRule={(ruleId) => {
             setBlockingRules((prev) => prev.filter((r) => r.id !== ruleId));
             showToast('Regla de bloqueo eliminada.');
@@ -343,8 +434,9 @@ export const App: React.FC = () => {
 
       {activeTab === 'upcoming' && (
         <UpcomingAlarmsScreen
+          now={now}
           upcomingOverview={scheduleResult.upcomingSevenDaysOverview}
-          activeScheduledPrompts={scheduleResult.activePromptsToSchedule}
+          onOpenSettingsTab={() => setActiveTab('settings')}
         />
       )}
 
@@ -355,6 +447,7 @@ export const App: React.FC = () => {
           records={records}
           blockingRules={blockingRules}
           settings={settings}
+          onOpenSettingsTab={() => setActiveTab('settings')}
         />
       )}
 
@@ -362,53 +455,76 @@ export const App: React.FC = () => {
         <SettingsScreen
           settings={settings}
           permissionStatus={permissionStatus}
+          activeScheduledPrompts={scheduleResult.activePromptsToSchedule}
           onUpdateSettings={handleUpdateGlobalSettings}
           onRequestPermissions={async () => {
             const res = await requestNotificationPermissions();
             setPermissionStatus(
-              res.granted ? `Concedido (${res.status})` : `Denegado (${res.status})`
+              res.granted ? 'Concedido' : `Denegado`
             );
           }}
         />
       )}
 
-      <nav className="tab-bar">
-        <button
-          className={`tab-item ${activeTab === 'today' ? 'active' : ''}`}
-          onClick={() => setActiveTab('today')}
-        >
-          <span>⏰</span>
-          <span>Hoy</span>
-        </button>
-        <button
-          className={`tab-item ${activeTab === 'routines' ? 'active' : ''}`}
-          onClick={() => setActiveTab('routines')}
-        >
-          <span>📋</span>
-          <span>Rutinas</span>
-        </button>
-        <button
-          className={`tab-item ${activeTab === 'upcoming' ? 'active' : ''}`}
-          onClick={() => setActiveTab('upcoming')}
-        >
-          <span>🔔</span>
-          <span>Próximas</span>
-        </button>
-        <button
-          className={`tab-item ${activeTab === 'history' ? 'active' : ''}`}
-          onClick={() => setActiveTab('history')}
-        >
-          <span>📅</span>
-          <span>Historial</span>
-        </button>
-        <button
-          className={`tab-item ${activeTab === 'settings' ? 'active' : ''}`}
-          onClick={() => setActiveTab('settings')}
-        >
-          <span>⚙️</span>
-          <span>Ajustes</span>
-        </button>
-      </nav>
+      <div className="tab-bar-dock">
+        <nav className="tab-bar-pill" aria-label="Navegación principal">
+          <button
+            className={`tab-item ${activeTab === 'today' ? 'active' : ''}`}
+            onClick={() => setActiveTab('today')}
+          >
+            <Icon
+              name="House"
+              size={28}
+              weight={activeTab === 'today' ? 'fill' : 'bold'}
+            />
+            <span>Hoy</span>
+          </button>
+          <button
+            className={`tab-item ${activeTab === 'routines' ? 'active' : ''}`}
+            onClick={() => setActiveTab('routines')}
+          >
+            <Icon
+              name="ListChecks"
+              size={28}
+              weight={activeTab === 'routines' ? 'fill' : 'bold'}
+            />
+            <span>Rutinas</span>
+          </button>
+          <button
+            className={`tab-item ${activeTab === 'upcoming' ? 'active' : ''}`}
+            onClick={() => setActiveTab('upcoming')}
+          >
+            <Icon
+              name="BellRinging"
+              size={28}
+              weight={activeTab === 'upcoming' ? 'fill' : 'bold'}
+            />
+            <span>Próximas</span>
+          </button>
+          <button
+            className={`tab-item ${activeTab === 'history' ? 'active' : ''}`}
+            onClick={() => setActiveTab('history')}
+          >
+            <Icon
+              name="CalendarBlank"
+              size={28}
+              weight={activeTab === 'history' ? 'fill' : 'bold'}
+            />
+            <span>Historial</span>
+          </button>
+          <button
+            className={`tab-item ${activeTab === 'settings' ? 'active' : ''}`}
+            onClick={() => setActiveTab('settings')}
+          >
+            <Icon
+              name="GearSix"
+              size={28}
+              weight={activeTab === 'settings' ? 'fill' : 'bold'}
+            />
+            <span>Ajustes</span>
+          </button>
+        </nav>
+      </div>
     </div>
   );
 };

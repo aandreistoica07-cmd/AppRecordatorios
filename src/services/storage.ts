@@ -49,22 +49,51 @@ async function writeJson<T>(key: string, data: T): Promise<void> {
 }
 
 export async function loadAppState(): Promise<PersistedAppState> {
-  const settings = await readJson<GlobalSettings>(
+  const rawSettings = await readJson<GlobalSettings>(
     KEYS.SETTINGS,
     DEFAULT_GLOBAL_SETTINGS
   );
-  const routines = await readJson<RoutineConfig[]>(
+  const settings: GlobalSettings = {
+    ...DEFAULT_GLOBAL_SETTINGS,
+    ...(rawSettings && typeof rawSettings === 'object' ? rawSettings : {}),
+  };
+
+  const defaultRoutines = createInitialRoutines(settings);
+  const rawRoutines = await readJson<RoutineConfig[]>(
     KEYS.ROUTINES,
-    createInitialRoutines(settings)
+    defaultRoutines
   );
-  const blockingRules = await readJson<BlockingRule[]>(
+  const routines =
+    Array.isArray(rawRoutines) &&
+    rawRoutines.length > 0 &&
+    rawRoutines.every(
+      (r) => r && typeof r.id === 'string' && typeof r.scheduleType === 'string'
+    )
+      ? rawRoutines
+      : defaultRoutines;
+
+  const rawRules = await readJson<BlockingRule[]>(
     KEYS.BLOCKING_RULES,
     DEFAULT_BLOCKING_RULES
   );
-  const records = await readJson<RoutineDayRecord[]>(KEYS.RECORDS, []);
-  const noticeMode = await readJson<ActiveNoticeMode>(KEYS.NOTICE_MODE, {
+  const blockingRules = Array.isArray(rawRules)
+    ? rawRules
+    : DEFAULT_BLOCKING_RULES;
+
+  const rawRecords = await readJson<RoutineDayRecord[]>(KEYS.RECORDS, []);
+  const records = Array.isArray(rawRecords) ? rawRecords : [];
+
+  const rawMode = await readJson<ActiveNoticeMode>(KEYS.NOTICE_MODE, {
     type: 'alarm',
   });
+  const noticeMode: ActiveNoticeMode =
+    rawMode &&
+    typeof rawMode === 'object' &&
+    (rawMode.type === 'alarm' ||
+      (rawMode.type === 'discreet' && typeof rawMode.untilISO === 'string') ||
+      (rawMode.type === 'paused' && typeof rawMode.untilISO === 'string'))
+      ? rawMode
+      : { type: 'alarm' };
 
   return {
     settings,

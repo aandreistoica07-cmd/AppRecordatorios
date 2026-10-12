@@ -399,6 +399,153 @@ describe('Motor puro de rutinas, bloqueos 24h, posposición y modos', () => {
     // El omitido no penaliza el denominador
     expect(compliance.completedCount).toBe(2); // minoxidil del 10 + dermastamp del 11
   });
+
+  it('(8) Porcentaje de cumplimiento y recuento "Hechas X/Y" solo cuentan alarmas ya vencidas (hora pasada), nunca las futuras: 2 hechas de 2 vencidas hoy = 100%', async () => {
+    const { computeDueProgressForDay } = await import('../scheduler');
+    const settings: GlobalSettings = {
+      ...DEFAULT_GLOBAL_SETTINGS,
+      pillMorningTimeHHMM: '09:00',
+      dermastampWeekday: 0, // Domingo
+      dermastampTimeHHMM: '14:00',
+      sleepTimeHHMM: '00:00', // Minoxidil a las 22:00 (futura a las 16:00)
+    };
+    const routines = createInitialRoutines(settings);
+
+    // Domingo 2026-10-11 a las 16:00:
+    // - Pastilla (09:00): ya vencida y HECHA.
+    // - Dermastamp (14:00): ya vencida y HECHA (a las 14:05; nota: ponemos sin bloqueo sobre otra tarea vencida para probar 2 hechas de 2 vencidas y 1 futura a las 22:00 sin bloquear).
+    const now1600 = buildDateFromKeyAndHHMM('2026-10-11', '16:00');
+    const records: RoutineDayRecord[] = [
+      {
+        routineId: 'pastilla',
+        dateKey: '2026-10-11',
+        status: 'completed',
+        completedAtISO: buildDateFromKeyAndHHMM('2026-10-11', '09:05').toISOString(),
+      },
+      {
+        routineId: 'dermastamp',
+        dateKey: '2026-10-11',
+        status: 'completed',
+        completedAtISO: buildDateFromKeyAndHHMM('2026-10-11', '14:05').toISOString(),
+        completedChecklistSteps: ['disinfect', 'applied'],
+      },
+    ];
+
+    // Probamos sin reglas de bloqueo para que la 3ª rutina del día (Minoxidil 22:00) esté pendiente y futura:
+    const progress = computeDueProgressForDay(
+      now1600,
+      routines,
+      records,
+      [],
+      settings
+    );
+
+    expect(progress.completedDueCount).toBe(2);
+    expect(progress.totalDueCount).toBe(2);
+    expect(progress.upcomingFutureCount).toBe(1); // Minoxidil de las 22:00 es futura
+    expect(progress.percentage).toBe(100); // 2 hechas de 2 vencidas hoy = 100%
+
+    // Y si una de las 2 vencidas NO está hecha a las 16:00, entonces es 1/2 = 50% (la futura de las 22:00 sigue sin contar)
+    const partialProgress = computeDueProgressForDay(
+      now1600,
+      routines,
+      [records[0]],
+      [],
+      settings
+    );
+    expect(partialProgress.completedDueCount).toBe(1);
+    expect(partialProgress.totalDueCount).toBe(2);
+    expect(partialProgress.percentage).toBe(50);
+  });
+
+  it('(9) Cumplimiento semanal con 2 hechas de 2 vencidas hasta ahora da 100% (nunca cuenta futuras ni días previos sin historial)', () => {
+    const settings: GlobalSettings = {
+      ...DEFAULT_GLOBAL_SETTINGS,
+      pillMorningTimeHHMM: '09:00',
+      dermastampWeekday: 0, // Domingo
+      dermastampTimeHHMM: '14:00',
+      sleepTimeHHMM: '00:00', // Minoxidil a las 22:00 (futura a las 16:00)
+    };
+    const routines = createInitialRoutines(settings);
+    const now1600 = buildDateFromKeyAndHHMM('2026-10-11', '16:00');
+
+    const records: RoutineDayRecord[] = [
+      {
+        routineId: 'pastilla',
+        dateKey: '2026-10-11',
+        status: 'completed',
+        completedAtISO: buildDateFromKeyAndHHMM('2026-10-11', '09:05').toISOString(),
+      },
+      {
+        routineId: 'dermastamp',
+        dateKey: '2026-10-11',
+        status: 'completed',
+        completedAtISO: buildDateFromKeyAndHHMM('2026-10-11', '14:05').toISOString(),
+        completedChecklistSteps: ['disinfect', 'applied'],
+      },
+    ];
+
+    const weekly = computeWeeklyCompliancePercentage(
+      now1600,
+      routines,
+      records,
+      [],
+      settings
+    );
+
+    expect(weekly.completedCount).toBe(2);
+    expect(weekly.evaluableCount).toBe(2);
+    expect(weekly.percentage).toBe(100);
+  });
+
+  it('(10) Cumplimiento semanal con alarmas vencidas hechas y un día con minoxidil omitido por dermastamp da 100%', () => {
+    const settings: GlobalSettings = {
+      ...DEFAULT_GLOBAL_SETTINGS,
+      pillMorningTimeHHMM: '09:00',
+      dermastampWeekday: 0, // Domingo
+      dermastampTimeHHMM: '20:00',
+      sleepTimeHHMM: '00:00', // Minoxidil 22:00
+    };
+    const routines = createInitialRoutines(settings);
+
+    // Domingo 2026-10-11: Pastilla (09:00) hecha, Dermastamp (20:00) hecho a las 21:00 -> bloquea Minoxidil de las 22:00 del domingo
+    // Lunes 2026-10-12 a las 12:00: Pastilla (09:00) hecha, Minoxidil (22:00) aún futura
+    const nowMondayNoon = buildDateFromKeyAndHHMM('2026-10-12', '12:00');
+    const records: RoutineDayRecord[] = [
+      {
+        routineId: 'pastilla',
+        dateKey: '2026-10-11',
+        status: 'completed',
+        completedAtISO: buildDateFromKeyAndHHMM('2026-10-11', '09:05').toISOString(),
+      },
+      {
+        routineId: 'dermastamp',
+        dateKey: '2026-10-11',
+        status: 'completed',
+        completedAtISO: buildDateFromKeyAndHHMM('2026-10-11', '21:00').toISOString(),
+        completedChecklistSteps: ['disinfect', 'applied'],
+      },
+      {
+        routineId: 'pastilla',
+        dateKey: '2026-10-12',
+        status: 'completed',
+        completedAtISO: buildDateFromKeyAndHHMM('2026-10-12', '09:10').toISOString(),
+      },
+    ];
+
+    const weekly = computeWeeklyCompliancePercentage(
+      nowMondayNoon,
+      routines,
+      records,
+      DEFAULT_BLOCKING_RULES,
+      settings
+    );
+
+    expect(weekly.omittedCount).toBe(1); // Minoxidil del domingo omitido por dermastamp
+    expect(weekly.completedCount).toBe(3); // Pastilla dom + Dermastamp dom + Pastilla lun
+    expect(weekly.evaluableCount).toBe(3); // El omitido y la futura de las 22:00 del lunes no penalizan
+    expect(weekly.percentage).toBe(100);
+  });
 });
 
 // @end: Unit-Tests-Scheduler
