@@ -1,0 +1,359 @@
+/* @section: iOS-Clock-Dark-Theme */
+
+:root {
+  --bg-black: #000000;
+  --bg-card: #1c1c1e;
+  --bg-card-elevated: #2c2c2e;
+  --accent: #ff9f0a;
+  --accent-dim: rgba(255, 159, 10, 0.16);
+  --accent-border: rgba(255, 159, 10, 0.45);
+  --text-primary: #ffffff;
+  --text-secondary: #8e8e93;
+  --text-muted: #636366;
+  --border-subtle: #2c2c2e;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+
+html,
+body,
+#root {
+  background-color: var(--bg-black);
+  color: var(--text-primary);
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'SF Pro Text',
+    'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  min-height: 100dvh;
+  overscroll-behavior-y: none;
+}
+
+@media screen and (max-width: 768px) {
+  input,
+  select,
+  textarea,
+  [contenteditable] {
+    font-size: 16px !important;
+  }
+}
+
+.app-shell {
+  max-width: 520px;
+  margin: 0 auto;
+  min-height: 100dvh;
+  padding-top: calc(env(safe-area-inset-top, 20px) + 16px);
+  padding-bottom: calc(env(safe-area-inset-bottom, 20px) + 96px);
+  padding-left: 20px;
+  padding-right: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.screen-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  border-bottom: 1px solid var(--border-subtle);
+  padding-bottom: 12px;
+}
+
+.screen-title {
+  font-size: 2.15rem;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+}
+
+.streak-pill {
+  background: var(--accent-dim);
+  border: 1px solid var(--accent-border);
+  color: var(--accent);
+  padding: 6px 14px;
+  border-radius: 999px;
+  font-weight: 700;
+  font-size: 0.95rem;
+  font-variant-numeric: tabular-nums;
+}
+
+/* @end: iOS-Clock-Dark-Theme */
+
+/* @section: Cards-And-Buttons */
+
+.clock-card {
+  background: var(--bg-card);
+  border-radius: 20px;
+  padding: 22px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  border: 1px solid var(--border-subtle);
+  transition: opacity 0.2s ease, transform 0.15s ease;
+}
+
+.clock-card.completed,
+.clock-card.omitted {
+  opacity: 0.48;
+}
+
+.clock-card-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.time-huge {
+  font-size: 3.1rem;
+  font-weight: 300;
+  line-height: 1;
+  letter-spacing: -0.04em;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-primary);
+}
+
+.routine-label {
+  font-size: 1.25rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-top: 4px;
+}
+
+.routine-subtext {
+  font-size: 0.92rem;
+  color: var(--text-secondary);
+}
+
+.badge-accent {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--accent-dim);
+  color: var(--accent);
+  border: 1px solid var(--accent-border);
+  border-radius: 999px;
+  padding: 4px 11px;
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+.badge-muted {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--bg-card-elevated);
+  color: var(--text-secondary);
+  border-radius: 999px;
+  padding: 4px 11px;
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+.btn-done-huge {
+  width: 100%;
+  background: var(--accent);
+  color: #000000;
+  border: none;
+  border-radius: 16px;
+  padding: 18px 20px;
+  font-size: 1.25rem;
+  font-weight: 800;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+}
+
+.btn-done-huge:disabled {
+  background: var(--bg-card-elevated);
+  color: var(--text-muted);
+  cursor: not-allowed;
+}
+
+.btn-secondary-action {
+  width: 100%;
+  background: var(--bg-card-elevated);
+  color: var(--accent);
+  border: 1px solid var(--accent-border);
+  border-radius: 14px;
+  padding: 14px 16px;
+  font-size: 1rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.btn-secondary-action:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.checklist-box {
+  background: rgba(0, 0, 0, 0.35);
+  border-radius: 14px;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.checklist-step {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px;
+  border-radius: 12px;
+  background: var(--bg-card-elevated);
+  border: 1px solid transparent;
+  color: var(--text-primary);
+  font-size: 1rem;
+  font-weight: 500;
+  text-align: left;
+  cursor: pointer;
+}
+
+.checklist-step.active-step {
+  border-color: var(--accent);
+}
+
+.checklist-step:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* @end: Cards-And-Buttons */
+
+/* @section: Navigation-And-Forms */
+
+.mode-banner {
+  background: var(--accent-dim);
+  border: 1px solid var(--accent);
+  border-radius: 18px;
+  padding: 16px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.mode-controls-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.chip-btn {
+  background: var(--bg-card-elevated);
+  color: var(--text-primary);
+  border: 1px solid var(--border-subtle);
+  padding: 10px 14px;
+  border-radius: 12px;
+  font-size: 0.92rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.chip-btn.active {
+  background: var(--accent);
+  color: #000000;
+  border-color: var(--accent);
+}
+
+.form-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.form-row:last-child {
+  border-bottom: none;
+}
+
+.input-dark {
+  background: var(--bg-card-elevated);
+  color: var(--text-primary);
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+  padding: 10px 12px;
+  font-size: 1rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.calendar-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 8px;
+}
+
+.calendar-cell {
+  aspect-ratio: 1;
+  border-radius: 12px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  font-variant-numeric: tabular-nums;
+  font-size: 0.95rem;
+  font-weight: 600;
+  position: relative;
+}
+
+.calendar-cell.status-completed {
+  background: var(--accent);
+  color: #000000;
+  border-color: var(--accent);
+}
+
+.calendar-cell.status-omitted_by_block {
+  background: var(--accent-dim);
+  color: var(--accent);
+  border: 1px dashed var(--accent);
+}
+
+.calendar-cell.status-skipped {
+  background: #141414;
+  color: var(--text-muted);
+  text-decoration: line-through;
+}
+
+.tab-bar {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  background: rgba(18, 18, 20, 0.94);
+  backdrop-filter: blur(18px);
+  border-top: 1px solid var(--border-subtle);
+  padding-top: 8px;
+  padding-bottom: calc(env(safe-area-inset-bottom, 12px) + 6px);
+  display: flex;
+  justify-content: space-around;
+  z-index: 50;
+}
+
+.tab-item {
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.74rem;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 4px 10px;
+}
+
+.tab-item.active {
+  color: var(--accent);
+}
+
+/* @end: Navigation-And-Forms */
