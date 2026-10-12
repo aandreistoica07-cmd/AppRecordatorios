@@ -38,9 +38,6 @@ export function createInitialRoutines(
         timeHHMM: settings.pillAfternoonTimeHHMM, // Por defecto 15:30
         insistIntervalMinutes: 10,
         insistDurationMinutes: 180,
-        allowNotAtHomePostpone: true,
-        postponeDurationMinutes: 60, // Pospone 1 hora
-        maxPostponeTimeHHMM: '22:00', // Límite máximo 22:00
       },
       allowDiscreetMode: false, // Por defecto siempre alarma
     },

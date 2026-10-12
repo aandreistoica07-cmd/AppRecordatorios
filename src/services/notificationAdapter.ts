@@ -12,7 +12,6 @@ import type {
 import { getPreviouslyScheduledIds, saveScheduledIds } from './storage';
 
 export const ACTION_TYPE_ROUTINE_DEFAULT = 'ROUTINE_DEFAULT_ACTIONS';
-export const ACTION_TYPE_ROUTINE_NOT_AT_HOME = 'ROUTINE_NOT_AT_HOME_ACTIONS';
 export const DEFAULT_NOTIFICATION_SOUND = 'default.wav';
 export const SIDELOAD_EXPIRY_NOTIFICATION_ID = 999007;
 
@@ -252,8 +251,7 @@ export async function requestNotificationPermissions(): Promise<{
 
 /**
  * Registra los tipos de acción en `@capacitor/local-notifications`:
- * - Botones: "Hecho" (`DONE`), "Posponer 1 h" (`POSTPONE_1H`) y "Pausar avisos 2 h" (`PAUSE_2H`),
- *   más "No estoy en casa (+1h)" (`NOT_AT_HOME`) en el aviso secundario de la pastilla.
+ * - Botones: "Hecho" (`DONE`), "Posponer 1 h" (`POSTPONE_1H`) y "Pausar avisos 2 h" (`PAUSE_2H`).
  * - IMPORTANTE (`foreground: true`): En iOS (`UNNotificationActionOptions.foreground`), una app Capacitor
  *   ejecuta la lógica de negocio en el hilo JS de `WKWebView`. Con la app cerrada o suspendida y `foreground: false`,
  *   el delegado nativo de Capacitor (`LocalNotificationsHandler.swift`) llama a `notifyListeners(..., retainUntilConsumed: true)`
@@ -282,31 +280,6 @@ export async function registerNotificationCategories(): Promise<void> {
             {
               id: 'PAUSE_2H',
               title: 'Pausar avisos 2 h',
-              foreground: true,
-            },
-          ],
-        },
-        {
-          id: ACTION_TYPE_ROUTINE_NOT_AT_HOME,
-          actions: [
-            {
-              id: 'DONE',
-              title: 'Hecho',
-              foreground: true,
-            },
-            {
-              id: 'POSTPONE_1H',
-              title: 'Posponer 1 h',
-              foreground: true,
-            },
-            {
-              id: 'PAUSE_2H',
-              title: 'Pausar avisos 2 h',
-              foreground: true,
-            },
-            {
-              id: 'NOT_AT_HOME',
-              title: 'No estoy en casa (+1h)',
               foreground: true,
             },
           ],
@@ -395,7 +368,6 @@ export function buildLocalNotificationPayload(
   p: ScheduledPrompt,
   settings: GlobalSettings
 ) {
-  const hasNotAtHome = p.actions.includes('NOT_AT_HOME');
   const isInsistence =
     p.kind === 'insistence' || p.kind === 'secondary_insistence';
   const isPauseRecovery = p.kind === 'pause_recovery';
@@ -411,8 +383,6 @@ export function buildLocalNotificationPayload(
 
   const body = isPauseRecovery
     ? 'La pausa de avisos ha terminado. Revisa tus tareas pendientes de hoy.'
-    : hasNotAtHome
-    ? 'Marca "Hecho", "Posponer 1 h", "Pausar 2 h" o "No estoy en casa" (máx. 22:00).'
     : 'Pendiente de marcar como "Hecho". Puedes posponer 1 h o pausar 2 h.';
 
   return {
@@ -428,9 +398,7 @@ export function buildLocalNotificationPayload(
       at: new Date(p.scheduledAtISO),
       allowWhileIdle: true,
     },
-    actionTypeId: hasNotAtHome
-      ? ACTION_TYPE_ROUTINE_NOT_AT_HOME
-      : ACTION_TYPE_ROUTINE_DEFAULT,
+    actionTypeId: ACTION_TYPE_ROUTINE_DEFAULT,
     extra: {
       deterministicId: p.deterministicId,
       routineId: p.routineId,

@@ -11,9 +11,6 @@ export interface SecondaryScheduleConfig {
   timeHHMM: string; // ej. '15:30'
   insistIntervalMinutes: number; // ej. 10
   insistDurationMinutes: number; // ej. 180
-  allowNotAtHomePostpone: boolean;
-  postponeDurationMinutes: number; // ej. 60 (1 hora)
-  maxPostponeTimeHHMM: string; // ej. '22:00'
 }
 
 export interface RoutineConfig {
@@ -134,11 +131,7 @@ export type PromptKind =
   | 'secondary_insistence'
   | 'pause_recovery';
 
-export type NotificationActionId =
-  | 'DONE'
-  | 'POSTPONE_1H'
-  | 'PAUSE_2H'
-  | 'NOT_AT_HOME';
+export type NotificationActionId = 'DONE' | 'POSTPONE_1H' | 'PAUSE_2H';
 
 export interface ScheduledPrompt {
   /** ID determinista legible: routineId__dateKey__kind__index */

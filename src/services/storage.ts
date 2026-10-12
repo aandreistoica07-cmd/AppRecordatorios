@@ -17,7 +17,7 @@ import type {
   ScheduleType,
 } from '../core/types';
 
-export const CURRENT_SCHEMA_VERSION = 3;
+export const CURRENT_SCHEMA_VERSION = 4;
 
 const KEYS = {
   SCHEMA_VERSION: 'rutinas_schema_version',
@@ -163,18 +163,6 @@ export function migrateAndSanitizeState(raw: {
             sec.insistDurationMinutes > 0
               ? sec.insistDurationMinutes
               : 180,
-          allowNotAtHomePostpone:
-            typeof sec.allowNotAtHomePostpone === 'boolean'
-              ? sec.allowNotAtHomePostpone
-              : true,
-          postponeDurationMinutes:
-            typeof sec.postponeDurationMinutes === 'number' &&
-            sec.postponeDurationMinutes > 0
-              ? sec.postponeDurationMinutes
-              : 60,
-          maxPostponeTimeHHMM: isValidHHMM(sec.maxPostponeTimeHHMM)
-            ? sec.maxPostponeTimeHHMM
-            : '22:00',
         };
       }
 
@@ -340,9 +328,15 @@ export function migrateAndSanitizeState(raw: {
         rec.notAtHomePostponeCount >= 0
       ) {
         cleanRec.notAtHomePostponeCount = rec.notAtHomePostponeCount;
+        if (cleanRec.postponeCount === undefined) {
+          cleanRec.postponeCount = rec.notAtHomePostponeCount;
+        }
       }
       if (isValidHHMM(rec.postponedAfternoonTimeHHMM)) {
         cleanRec.postponedAfternoonTimeHHMM = rec.postponedAfternoonTimeHHMM;
+        if (!cleanRec.postponedPrimaryTimeHHMM) {
+          cleanRec.postponedPrimaryTimeHHMM = rec.postponedAfternoonTimeHHMM;
+        }
       }
       if (typeof rec.blockReason === 'string') {
         cleanRec.blockReason = rec.blockReason;

@@ -16,7 +16,6 @@ import {
   deleteRoutineAndCleanup,
   evaluateDaySummary,
   markRoutineDone,
-  postponeRoutineNotAtHome,
   postponeRoutineTask,
   resetRoutinePostpone,
   resolveRoutinePrimaryHHMM,
@@ -263,8 +262,12 @@ describe('Motor puro de rutinas, bloqueos 24h, posposición y modos', () => {
     expect(d2300.getMinutes()).toBe(0);
   });
 
-  it('(5) "No estoy en casa" repetido desde las 15:30 pospone de 1h en 1h hasta el límite máximo de las 22:00', () => {
-    const routines = createInitialRoutines(DEFAULT_GLOBAL_SETTINGS);
+  it('(5) Posponer genérico en la pastilla de la tarde (15:30): soporta +1h/+2h/+4h/hora concreta con tope en la hora de dormir y mantiene compatibilidad con datos heredados de "No estoy en casa"', () => {
+    const settings: GlobalSettings = {
+      ...DEFAULT_GLOBAL_SETTINGS,
+      sleepTimeHHMM: '22:00', // Tope hora de dormir = 22:00
+    };
+    const routines = createInitialRoutines(settings);
     const pillRoutine = routines.find((r) => r.id === 'pastilla')!;
     const dateKey = '2026-10-12';
 
@@ -276,14 +279,21 @@ describe('Motor puro de rutinas, bloqueos 24h, posposición y modos', () => {
       '19:30', // 4ª pulsación
       '20:30', // 5ª pulsación
       '21:30', // 6ª pulsación
-      '22:00', // 7ª pulsación (21:30 + 1h = 22:30 -> truncado al tope 22:00)
-      '22:00', // 8ª pulsación (se mantiene clavado en el tope de las 22:00)
+      '22:00', // 7ª pulsación (21:30 + 1h = 22:30 -> truncado al tope de dormir 22:00)
+      '22:00', // 8ª pulsación (se mantiene clavado en el tope de dormir 22:00)
     ];
 
-    let callClock = buildDateFromKeyAndHHMM(dateKey, '15:35');
+    let callClock = buildDateFromKeyAndHHMM(dateKey, '15:30');
 
     for (let i = 0; i < expectedTimes.length; i++) {
-      const res = postponeRoutineNotAtHome(pillRoutine, record, dateKey, callClock);
+      const res = postponeRoutineTask({
+        routine: pillRoutine,
+        existingRecord: record,
+        dateKey,
+        now: callClock,
+        settings,
+        mode: { type: 'add_hours', hours: 1 },
+      });
       record = res.record;
       expect(res.nextTimeHHMM).toBe(expectedTimes[i]);
       if (i < 6) {
@@ -291,12 +301,46 @@ describe('Motor puro de rutinas, bloqueos 24h, posposición y modos', () => {
       } else {
         expect(res.reachedCap).toBe(true);
       }
-      // Simulamos que el usuario vuelve a pulsar cuando salta el nuevo aviso pospuesto
       callClock = buildDateFromKeyAndHHMM(dateKey, res.nextTimeHHMM);
     }
 
-    expect(record?.notAtHomePostponeCount).toBe(8);
+    expect(record?.postponeCount).toBe(8);
+    expect(record?.postponedPrimaryTimeHHMM).toBe('22:00');
     expect(record?.postponedAfternoonTimeHHMM).toBe('22:00');
+
+    // Compatibilidad con registros ya guardados que tenían una posposición hecha con el antiguo "No estoy en casa":
+    const migrated = migrateAndSanitizeState({
+      schemaVersion: 2,
+      settings,
+      routines,
+      blockingRules: DEFAULT_BLOCKING_RULES,
+      records: [
+        {
+          routineId: 'pastilla',
+          dateKey,
+          status: 'pending',
+          notAtHomePostponeCount: 2,
+          postponedAfternoonTimeHHMM: '17:30',
+        },
+      ],
+      noticeMode: { type: 'alarm' },
+    });
+    const migratedRec = migrated.records[0];
+    expect(migratedRec.postponedPrimaryTimeHHMM).toBe('17:30');
+    expect(migratedRec.postponedAfternoonTimeHHMM).toBe('17:30');
+    expect(migratedRec.postponeCount).toBe(2);
+
+    // Y si sobre ese registro migrado se vuelve a posponer +2 h, pasa a las 19:30 respetando el estado previo
+    const nextFromLegacy = postponeRoutineTask({
+      routine: pillRoutine,
+      existingRecord: migratedRec,
+      dateKey,
+      now: buildDateFromKeyAndHHMM(dateKey, '17:30'),
+      settings,
+      mode: { type: 'add_hours', hours: 2 },
+    });
+    expect(nextFromLegacy.nextTimeHHMM).toBe('19:30');
+    expect(nextFromLegacy.record.postponeCount).toBe(3);
   });
 
   it('(6) Checklist de 2 pasos del Dermastamp: impide completar paso 2 sin el paso 1 y Modo Discreto que caduca vuelve a modo alarma', () => {

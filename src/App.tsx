@@ -20,7 +20,6 @@ import {
   formatDateKey,
   formatHHMM,
   markRoutineDone,
-  postponeRoutineNotAtHome,
   postponeRoutineTask,
   resetRoutinePostpone,
   toggleChecklistStep,
@@ -249,8 +248,6 @@ export const App: React.FC = () => {
           type: 'add_hours',
           hours: 1,
         });
-      } else if (actionId === 'NOT_AT_HOME') {
-        handlePostponeNotAtHome(targetRoutine, effectiveDateKey);
       }
     }
   };
@@ -560,34 +557,6 @@ export const App: React.FC = () => {
     showToast(`Horario original de ${routine.name} restablecido.`);
   };
 
-  const handlePostponeNotAtHome = (routine: RoutineConfig, dateKey: string) => {
-    const existing = records.find(
-      (r) => r.routineId === routine.id && r.dateKey === dateKey
-    );
-    const res = postponeRoutineNotAtHome(routine, existing, dateKey, new Date());
-    void triggerLightHaptic();
-    void clearRoutineDeliveredAndPendingNotifications(
-      routine.id,
-      getRoutineActiveNumericIds(routine.id, dateKey)
-    );
-    setRecords((prev) => {
-      const idx = prev.findIndex(
-        (r) =>
-          r.routineId === res.record.routineId &&
-          r.dateKey === res.record.dateKey
-      );
-      if (idx === -1) return [...prev, res.record];
-      const copy = [...prev];
-      copy[idx] = res.record;
-      return copy;
-    });
-    showToast(
-      res.reachedCap
-        ? `Pospuesto al límite máximo de las ${res.nextTimeHHMM}.`
-        : `No estoy en casa: aviso de tarde pospuesto a las ${res.nextTimeHHMM}.`
-    );
-  };
-
   const handleUpdateGlobalSettings = (next: GlobalSettings) => {
     const sleepChanged = next.sleepTimeHHMM !== settings.sleepTimeHHMM;
     setSettings(next);
@@ -678,6 +647,8 @@ export const App: React.FC = () => {
 
   return (
     <div className={`app-shell ${shellThemeClass}`}>
+      <div className="status-bar-blur-shield" aria-hidden="true" />
+
       {toastMessage && (
         <div className="floating-toast" role="status">
           <Icon
@@ -705,7 +676,6 @@ export const App: React.FC = () => {
           onToggleChecklistStep={handleToggleChecklistStep}
           onPostponeTask={handlePostponeTask}
           onResetTaskPostpone={handleResetTaskPostpone}
-          onPostponeNotAtHome={handlePostponeNotAtHome}
           onActivateDiscreet={(untilDate) => {
             setNoticeMode({
               type: 'discreet',

@@ -51,7 +51,6 @@ interface TodayScreenProps {
       | { type: 'until_time'; targetHHMM: string }
   ) => void;
   onResetTaskPostpone: (routine: RoutineConfig, dateKey: string) => void;
-  onPostponeNotAtHome: (routine: RoutineConfig, dateKey: string) => void;
   onActivateDiscreet: (untilDate: Date) => void;
   onActivatePause: (untilDate: Date, targetHHMM: string) => void;
   onResetNoticeMode: () => void;
@@ -76,7 +75,6 @@ export const TodayScreen: React.FC<TodayScreenProps> = ({
   onToggleChecklistStep,
   onPostponeTask,
   onResetTaskPostpone,
-  onPostponeNotAtHome,
   onActivateDiscreet,
   onActivatePause,
   onResetNoticeMode,
@@ -809,11 +807,12 @@ export const TodayScreen: React.FC<TodayScreenProps> = ({
               settings,
               rec
             );
-            const primaryHHMM =
-              rec?.postponedPrimaryTimeHHMM ?? basePrimaryHHMM;
+            const effectivePostponedHHMM =
+              rec?.postponedPrimaryTimeHHMM ?? rec?.postponedAfternoonTimeHHMM;
+            const primaryHHMM = effectivePostponedHHMM ?? basePrimaryHHMM;
             const isPostponedPrimary = Boolean(
-              rec?.postponedPrimaryTimeHHMM &&
-                rec.postponedPrimaryTimeHHMM !== basePrimaryHHMM
+              effectivePostponedHHMM &&
+                effectivePostponedHHMM !== basePrimaryHHMM
             );
             const blockCheck = findActiveBlockForTimestamp(
               routine.id,
@@ -1046,20 +1045,21 @@ export const TodayScreen: React.FC<TodayScreenProps> = ({
                   </div>
                 )}
 
-                {/* Fila secundaria de acciones: Posponer por tarea + No estoy en casa (si aplica) */}
+                {/* Fila secundaria de acciones: solo "Posponer" a ancho completo */}
                 {!isCompleted && !isOmitted && (
                   <div
                     style={{
                       display: 'flex',
-                      flexWrap: 'wrap',
-                      gap: '8px',
+                      width: '100%',
                     }}
                   >
                     <button
                       type="button"
                       className="bevel-row-action-pill"
                       style={{
-                        flex: 1,
+                        width: '100%',
+                        flex: '1 1 100%',
+                        minWidth: 0,
                         minHeight: '40px',
                         padding: '0 14px',
                         fontSize: '14.5px',
@@ -1083,39 +1083,6 @@ export const TodayScreen: React.FC<TodayScreenProps> = ({
                           : 'Posponer'}
                       </span>
                     </button>
-
-                    {routine.secondarySchedule?.allowNotAtHomePostpone && (
-                      <button
-                        type="button"
-                        className="bevel-row-action-pill"
-                        style={{
-                          flex: 1,
-                          minHeight: '40px',
-                          padding: '0 14px',
-                          fontSize: '14.5px',
-                        }}
-                        disabled={
-                          afternoonHHMM ===
-                          routine.secondarySchedule.maxPostponeTimeHHMM
-                        }
-                        onClick={() =>
-                          onPostponeNotAtHome(routine, selectedDateKey)
-                        }
-                      >
-                        <Icon
-                          name="House"
-                          size={17}
-                          weight="bold"
-                          color="var(--text-secondary)"
-                        />
-                        <span>
-                          {afternoonHHMM ===
-                          routine.secondarySchedule.maxPostponeTimeHHMM
-                            ? 'Tope 22:00'
-                            : `No estoy en casa (+1h → ${afternoonHHMM})`}
-                        </span>
-                      </button>
-                    )}
                   </div>
                 )}
 

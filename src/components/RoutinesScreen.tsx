@@ -427,7 +427,7 @@ export const RoutinesScreen: React.FC<RoutinesScreenProps> = ({
                     <div>
                       <div className="sheet-field-label">2º aviso de tarde</div>
                       <div className="sheet-field-sub">
-                        Si no se marcó por la mañana (+1 h con "No estoy en casa")
+                        Si no se marcó por la mañana (posponible hasta la hora de dormir)
                       </div>
                     </div>
                     <button

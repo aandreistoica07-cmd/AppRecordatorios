@@ -463,9 +463,11 @@ export type PostponeTaskInputMode =
   | { type: 'until_time'; targetHHMM: string };
 
 /**
- * Posponer por tarea (sirve para cualquier rutina: minoxidil, pastilla, dermastamp y nuevas):
- * - Cancela sus insistencias previas al desplazar la hora del aviso principal (`postponedPrimaryAtISO` / `postponedPrimaryTimeHHMM`).
+ * Posponer por tarea (sirve para cualquier rutina: minoxidil, pastilla de mañana o tarde, dermastamp y nuevas):
+ * - Cancela sus insistencias previas al desplazar la hora del aviso (`postponedPrimaryAtISO` / `postponedPrimaryTimeHHMM`).
  * - Soporta posponer por duración (+1 h, +2 h, +4 h) o hasta una hora concreta (`targetHHMM`).
+ * - Si la rutina tiene segundo horario (ej. Pastilla de la tarde a las 15:30) y se pospone en la tarde
+ *   o sobre un registro con `postponedAfternoonTimeHHMM` previo, parte de ese horario de tarde y aplica el mismo tope de la hora de dormir.
  * - Aplica tope máximo en la hora de dormir global (`settings.sleepTimeHHMM`).
  */
 export function postponeRoutineTask(params: {
@@ -493,12 +495,46 @@ export function postponeRoutineTask(params: {
 
   const basePrimaryHHMM = resolveRoutinePrimaryHHMM(routine, settings);
   const basePrimaryDate = buildDateFromKeyAndHHMM(dateKey, basePrimaryHHMM);
-  const currentScheduledDate = resolveRoutinePrimaryDate(
+  let currentScheduledDate = resolveRoutinePrimaryDate(
     routine,
     dateKey,
     settings,
     existingRecord
   );
+
+  let secondaryBaseDate: Date | null = null;
+  if (routine.secondarySchedule) {
+    secondaryBaseDate = buildDateFromKeyAndHHMM(
+      dateKey,
+      routine.secondarySchedule.timeHHMM
+    );
+    const effectiveAfternoonHHMM =
+      existingRecord?.postponedAfternoonTimeHHMM ??
+      routine.secondarySchedule.timeHHMM;
+    let afternoonScheduledDate = buildDateFromKeyAndHHMM(
+      dateKey,
+      effectiveAfternoonHHMM
+    );
+    if (
+      existingRecord?.postponedAfternoonTimeHHMM &&
+      afternoonScheduledDate.getTime() < basePrimaryDate.getTime()
+    ) {
+      afternoonScheduledDate = buildDateFromKeyAndHHMM(
+        addDaysToDateKey(dateKey, 1),
+        effectiveAfternoonHHMM
+      );
+    }
+
+    if (
+      existingRecord?.postponedAfternoonTimeHHMM ||
+      (now && now.getTime() >= secondaryBaseDate.getTime())
+    ) {
+      if (afternoonScheduledDate.getTime() > currentScheduledDate.getTime()) {
+        currentScheduledDate = afternoonScheduledDate;
+      }
+    }
+  }
+
   const sleepCapDate = resolveSleepCapDate(dateKey, settings, basePrimaryDate);
   const capMs = Math.max(basePrimaryDate.getTime(), sleepCapDate.getTime());
 
@@ -538,6 +574,11 @@ export function postponeRoutineTask(params: {
   const nextTimeHHMM = formatHHMM(nextDate.getHours(), nextDate.getMinutes());
   const nextDateISO = nextDate.toISOString();
 
+  const previousPostponeCount =
+    existingRecord?.postponeCount ??
+    existingRecord?.notAtHomePostponeCount ??
+    0;
+
   const record: RoutineDayRecord = {
     ...(existingRecord ?? {
       routineId: routine.id,
@@ -549,10 +590,19 @@ export function postponeRoutineTask(params: {
     dateKey,
     status:
       existingRecord?.status === 'completed' ? 'completed' : 'pending',
-    postponeCount: (existingRecord?.postponeCount ?? 0) + 1,
+    postponeCount: previousPostponeCount + 1,
     postponedPrimaryTimeHHMM: nextTimeHHMM,
     postponedPrimaryAtISO: nextDateISO,
   };
+
+  if (
+    secondaryBaseDate &&
+    (nextDate.getTime() >= secondaryBaseDate.getTime() ||
+      existingRecord?.postponedAfternoonTimeHHMM)
+  ) {
+    record.postponedAfternoonTimeHHMM = nextTimeHHMM;
+  }
+
   delete record.blockReason;
   delete record.blockedByRoutineId;
 
@@ -579,6 +629,8 @@ export function resetRoutinePostpone(
     delete clean.postponeCount;
     delete clean.postponedPrimaryTimeHHMM;
     delete clean.postponedPrimaryAtISO;
+    delete clean.notAtHomePostponeCount;
+    delete clean.postponedAfternoonTimeHHMM;
     return clean;
   }
   const routine = recordOrRoutine;
@@ -596,54 +648,9 @@ export function resetRoutinePostpone(
   delete clean.postponeCount;
   delete clean.postponedPrimaryTimeHHMM;
   delete clean.postponedPrimaryAtISO;
+  delete clean.notAtHomePostponeCount;
+  delete clean.postponedAfternoonTimeHHMM;
   return clean;
-}
-
-/**
- * Lógica del botón "No estoy en casa" en el aviso de tarde de la pastilla:
- * Pospone 1 hora (repetible) desde la hora actual del aviso de tarde o desde `now` (si se pulsa más tarde),
- * nunca superando el límite de las 22:00 (`maxPostponeTimeHHMM`).
- */
-export function postponeRoutineNotAtHome(
-  routine: RoutineConfig,
-  existingRecord: RoutineDayRecord | undefined,
-  dateKey: string,
-  _now?: Date
-): { record: RoutineDayRecord; reachedCap: boolean; nextTimeHHMM: string } {
-  const sec = routine.secondarySchedule;
-  if (!sec || !sec.allowNotAtHomePostpone) {
-    throw new Error(`La rutina ${routine.id} no admite posposición "No estoy en casa"`);
-  }
-
-  const maxDate = buildDateFromKeyAndHHMM(dateKey, sec.maxPostponeTimeHHMM);
-  const currentAfternoonHHMM =
-    existingRecord?.postponedAfternoonTimeHHMM ?? sec.timeHHMM;
-  const currentScheduledDate = buildDateFromKeyAndHHMM(
-    dateKey,
-    currentAfternoonHHMM
-  );
-
-  // Pospone 1 hora (60 min) sobre la hora del aviso de tarde actual, con tope máximo en las 22:00
-  const proposedMs =
-    currentScheduledDate.getTime() + sec.postponeDurationMinutes * 60_000;
-  const clampedMs = Math.min(proposedMs, maxDate.getTime());
-  const reachedCap = proposedMs >= maxDate.getTime();
-
-  const nextDate = new Date(clampedMs);
-  const nextTimeHHMM = formatHHMM(nextDate.getHours(), nextDate.getMinutes());
-
-  const record: RoutineDayRecord = {
-    ...(existingRecord ?? {
-      routineId: routine.id,
-      dateKey,
-      status: 'pending',
-    }),
-    routineName: routine.name,
-    notAtHomePostponeCount: (existingRecord?.notAtHomePostponeCount ?? 0) + 1,
-    postponedAfternoonTimeHHMM: nextTimeHHMM,
-  };
-
-  return { record, reachedCap, nextTimeHHMM };
 }
 
 // @end: Scheduler-Checklist-And-Postpone
@@ -754,20 +761,13 @@ const DEFAULT_TASK_ACTIONS: NotificationActionId[] = [
   'PAUSE_2H',
 ];
 
-const AFTERNOON_NOT_AT_HOME_ACTIONS: NotificationActionId[] = [
-  'DONE',
-  'POSTPONE_1H',
-  'PAUSE_2H',
-  'NOT_AT_HOME',
-];
-
 /**
  * Motor principal puro:
  * Calcula todas las alarmas e insistencias de los próximos 7 días,
  * cancela/omite automáticamente cualquier alarma de Minoxidil que caiga dentro de las 24h exactas
  * desde que se marcó el Dermastamp (si el Minoxidil no se había marcado ya antes),
  * gestiona la posposición por tarea (+1h, +2h, +4h o hasta una hora concreta con tope en la hora de dormir),
- * gestiona el doble aviso de la Pastilla (mañana 09:00 + tarde 15:30 + posposición "No estoy en casa" hasta 22:00),
+ * gestiona el doble aviso de la Pastilla (mañana 09:00 + tarde 15:30),
  * limita la ráfaga de insistencias al máximo configurable (por defecto 6),
  * y gestiona el Modo Discreto y la Pausa con un único aviso resumen de recuperación.
  */
@@ -931,64 +931,77 @@ export function computeSchedule(
         targetList: candidateActivePrompts,
       });
 
-      // Si la rutina tiene segundo aviso (ej. Pastilla por la tarde a las 15:30 o pospuesta con "No estoy en casa")
+      // Si la rutina tiene segundo aviso (ej. Pastilla por la tarde a las 15:30 o posposición de tarde heredada)
       if (routine.secondarySchedule) {
         const sec = routine.secondarySchedule;
+        const baseAfternoonDate = buildDateFromKeyAndHHMM(
+          dateKey,
+          sec.timeHHMM
+        );
         const effectiveAfternoonHHMM =
           existingRec?.postponedAfternoonTimeHHMM ?? sec.timeHHMM;
-        const secondaryDate = buildDateFromKeyAndHHMM(
+        let secondaryDate = buildDateFromKeyAndHHMM(
           dateKey,
           effectiveAfternoonHHMM
         );
+        if (
+          existingRec?.postponedAfternoonTimeHHMM &&
+          secondaryDate.getTime() < baseAfternoonDate.getTime()
+        ) {
+          secondaryDate = buildDateFromKeyAndHHMM(
+            addDaysToDateKey(dateKey, 1),
+            effectiveAfternoonHHMM
+          );
+        }
 
-        const secActions = sec.allowNotAtHomePostpone
-          ? AFTERNOON_NOT_AT_HOME_ACTIONS
-          : DEFAULT_TASK_ACTIONS;
+        // Si la tarea aún no se ha pospuesto a una hora igual o posterior al aviso de tarde,
+        // programamos el segundo aviso de la tarde y sus insistencias.
+        if (primaryDate.getTime() < secondaryDate.getTime()) {
+          const secDetId = buildDeterministicStringId(
+            routine.id,
+            dateKey,
+            'secondary_primary',
+            0
+          );
+          upcomingSevenDaysOverview.push({
+            deterministicId: secDetId,
+            notificationNumericId: toDeterministicNumericId(secDetId),
+            alarmUuid: toDeterministicUuid(secDetId),
+            routineId: routine.id,
+            routineName: `${routine.name} (Tarde)`,
+            dateKey,
+            scheduledAtISO: secondaryDate.toISOString(),
+            kind: 'secondary_primary',
+            channel: resolvePromptChannel(routine, secondaryDate, effectiveMode),
+            blocked: false,
+            actions: DEFAULT_TASK_ACTIONS,
+          });
 
-        const secDetId = buildDeterministicStringId(
-          routine.id,
-          dateKey,
-          'secondary_primary',
-          0
-        );
-        upcomingSevenDaysOverview.push({
-          deterministicId: secDetId,
-          notificationNumericId: toDeterministicNumericId(secDetId),
-          alarmUuid: toDeterministicUuid(secDetId),
-          routineId: routine.id,
-          routineName: `${routine.name} (Tarde)`,
-          dateKey,
-          scheduledAtISO: secondaryDate.toISOString(),
-          kind: 'secondary_primary',
-          channel: resolvePromptChannel(routine, secondaryDate, effectiveMode),
-          blocked: false,
-          actions: secActions,
-        });
-
-        appendPromptSeries({
-          routine,
-          dateKey,
-          baseDate: secondaryDate,
-          primaryKind: 'secondary_primary',
-          insistenceKind: 'secondary_insistence',
-          intervalMinutes: getEffectiveIntervalMinutes(
+          appendPromptSeries({
             routine,
-            secondaryDate,
+            dateKey,
+            baseDate: secondaryDate,
+            primaryKind: 'secondary_primary',
+            insistenceKind: 'secondary_insistence',
+            intervalMinutes: getEffectiveIntervalMinutes(
+              routine,
+              secondaryDate,
+              effectiveMode,
+              sec.insistIntervalMinutes
+            ),
+            durationMinutes: sec.insistDurationMinutes,
+            maxInsistenceCount,
+            actions: DEFAULT_TASK_ACTIONS,
+            nowMs,
+            pauseUntilMs,
+            todayKey,
+            pausedPendingRoutines,
             effectiveMode,
-            sec.insistIntervalMinutes
-          ),
-          durationMinutes: sec.insistDurationMinutes,
-          maxInsistenceCount,
-          actions: secActions,
-          nowMs,
-          pauseUntilMs,
-          todayKey,
-          pausedPendingRoutines,
-          effectiveMode,
-          blockingRules,
-          records,
-          targetList: candidateActivePrompts,
-        });
+            blockingRules,
+            records,
+            targetList: candidateActivePrompts,
+          });
+        }
       }
     }
   }
