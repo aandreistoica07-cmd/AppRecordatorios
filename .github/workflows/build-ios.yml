@@ -112,8 +112,8 @@ jobs:
               fw_name=$(basename "$fw" .framework)
               fw_plist="$fw/Info.plist"
               if [ -f "$fw_plist" ]; then
-                clean_name=$(echo "$fw_name" | tr -cd 'A-Za-z0-9.-')
-                unique_fw_id="org.cocoapods.${clean_name}"
+                clean_name=$(echo "$fw_name" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9')
+                unique_fw_id="${BUNDLE_ID}.fw.${clean_name}"
                 /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $unique_fw_id" "$fw_plist"
                 echo "Framework $fw_name -> CFBundleIdentifier = $unique_fw_id"
               fi
